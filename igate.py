@@ -1,21 +1,14 @@
 #! /usr/bin/python3
 
-#
-# Credit to datagod and his MeshWatch project for providing an example/starting-point for this project
-# https://meshtastic.discourse.group/t/meshwatch-testing-and-monitoring-tool/3923
-# https://github.com/datagod/meshwatch
-#
-
 from pubsub import pub
 import meshtastic
 import meshtastic.serial_interface
 import time
-from signal import signal, SIGINT
 import sys
-from sys import exit
 from socket import *
 import traceback 
 import select
+
 
 interface = None
 spin = True
@@ -23,6 +16,8 @@ nodeTable = {}
 encryptedTable = {}
 gatewayId = ''
 sock = None
+serverHost = 'northwest.aprs2.net'
+serverPort = 14578
 callSign = 'your_callsign'
 callPass = 'your_callsign_pass_code'
 version = '0.0.1'
@@ -172,8 +167,8 @@ def onReceive(packet, interface): # called when a packet arrives
 def sendToAprsIs(packet, connectRetry = 3):
     global nodeTable
     global sock
-    global callSign
     global aprsISConected
+    global callSign
 
     if packet['fromId'] != None and packet['fromId'] in nodeTable and 'latitude' in packet['decoded']['position'] and 'longitude' in packet['decoded']['position']:
         lat_aprs, lon_aprs = decimal_degrees_to_aprs(packet['decoded']['position']['latitude'], packet['decoded']['position']['longitude'])
@@ -194,7 +189,7 @@ def sendToAprsIs(packet, connectRetry = 3):
                 print('Could not send to APRS-IS; sock == None and/or aprsISConected == False (pre). Attempting to reconnect...')
                 serverHost = 'northwest.aprs2.net'
                 serverPort = 14578
-                if False == connectAndLoginToAprsIs(serverHost, serverPort, callSign, callPass):
+                if False == connectAndLoginToAprsIs():
                     print('ERROR: could not log into APRS-IS server: {} port {}'.format(serverHost, serverPort))
                     time.sleep(3)
                     continue
@@ -209,10 +204,14 @@ def sendToAprsIs(packet, connectRetry = 3):
     else:
         print('No fromId, latitude, longitude or not in nodeTable!!!\n{}'.format(packet))
 
-def connectAndLoginToAprsIs(serverHost, serverPort, callSign, callPass, connectRetry = 3):
+def connectAndLoginToAprsIs(connectRetry = 3):
     global sock
     global version
     global aprsISConected
+    global serverHost
+    global serverPort
+    global callSign
+    global callPass
 
     # http://www.aprs.org/doc/APRS101.PDF
     # http://www.aprs.org/APRS-docs/PROTOCOL.TXT
@@ -227,28 +226,37 @@ def connectAndLoginToAprsIs(serverHost, serverPort, callSign, callPass, connectR
         print('Connect and log in to APRS-IS server attempt {}: {} port {}'.format(i + 1, serverHost, serverPort))
 
         if sock != None:
-            # sock.shutdown(0)
+            try:
+                sock.shutdown(0)
+            except Exception as e:
+                # do something...
+                noop = True
+
             sock.close()
 
-        sock = socket(AF_INET, SOCK_STREAM)
-        # TODO: what happens if connect fails? Handle it...
-        sock.connect((serverHost, serverPort))
-        time.sleep(1)
-        login = 'user {} pass {} vers "KD7UBJ Meshtastic iGate v{}" \n'.format(callSign, callPass, version)
-        sock.send(login.encode())
-        time.sleep(1)
-        data = sock.recv(1024)
+        try:
+            sock = socket(AF_INET, SOCK_STREAM)
+            sock.connect((serverHost, serverPort))
 
-        if ('# logresp {} verified').format(callSign).encode() in data:
-            sock.settimeout(1)
-            aprsISConected = True
-            return True
-        else:
-            aprsISConected = False
-            if sock != None:
-                sock.shutdown(0)
-                sock.close()
-                sock = None
+            time.sleep(1)
+            login = 'user {} pass {} vers "KD7UBJ Meshtastic iGate v{}" \n'.format(callSign, callPass, version)
+            sock.send(login.encode())
+            time.sleep(1)
+            data = sock.recv(1024)
+
+            if ('# logresp {} verified').format(callSign).encode() in data:
+                sock.settimeout(1)
+                aprsISConected = True
+                return True
+            else:
+                aprsISConected = False
+                if sock != None:
+                    sock.shutdown(0)
+                    sock.close()
+                    sock = None
+        except Exception as e:
+            print('An exception occurred: {}'.format(e))
+            traceback.print_exc()
 
     return False
 
@@ -268,12 +276,10 @@ def handleRfCommand(message):
 
 def insertIntoNodeTable(id, longName, shortName, hwModel):
     global nodeTable
-
     nodeTable[id] = { 'longName': longName, 'shortName': shortName, 'hwModel': hwModel }
 
 def insertIntoEncryptedTable(_from, to, channel):
     global encryptedTable
-    
     encryptedTable[_from] = { 'to': to, 'channel': channel }
 
 def decimal_degrees_to_aprs(latitude, longitude):
@@ -294,7 +300,6 @@ def getMyNodeInfo(interface):
     global gatewayId
 
     thisNode = interface.getMyNodeInfo()
-    # DecodePacket('MYNODE',thisNode,'','',PrintSleep =PrintSleep)
 
     print('=== Base Node =================================')
     gatewayId = dictValueOrDefault('id', thisNode['user'])
@@ -340,7 +345,6 @@ def displayNodes(interface):
             insertIntoNodeTable(node['user']['id'], node['user']['longName'], node['user']['shortName'], node['user']['hwModel'])
 
         print('===============================================')
-
     except Exception as e:
         print('An exception occurred: {}'.format(e))
         traceback.print_exc()
@@ -410,26 +414,17 @@ def handleKeyboardCommand(command):
         print('q => quit')
         print('===============================================')
 
-# def SIGINT_handler(signal_received, frame):
-#     global spin
-#     print('\nSIGINT or CTRL-C detected. Exiting gracefully...')
-#     spin = False
-
 def main():
     global interface
     global spin
     global sock
-    global callSign
-    global callPass
-
-    # signal(SIGINT, SIGINT_handler)
 
     # log in to APRS-IS server with passcode to allow writing
     # serverHost = 'first.aprs.net'
     # serverPort = 10152
     serverHost = 'northwest.aprs2.net'
     serverPort = 14578
-    if False == connectAndLoginToAprsIs(serverHost, serverPort, callSign, callPass):
+    if False == connectAndLoginToAprsIs():
         print('ERROR: could not log into APRS-IS server: {} port {}'.format(serverHost, serverPort))
 
     print('Finding Meshtastic device')
@@ -456,4 +451,3 @@ def main():
 
 if __name__=='__main__':
     main()
-
