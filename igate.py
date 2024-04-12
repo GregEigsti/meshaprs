@@ -105,9 +105,12 @@ def onReceive(packet, interface): # called when a packet arrives
             # someday... convert to APRS format and write APRS packet to APRS-IS?
 
             # if packet is dm to this node send appropriate response
-            if gatewayId == packet['toId']:
-                response = handleRfCommand(packet['decoded']['text'])
-                interface.sendText(response, destinationId=packet['fromId'], wantAck = False)
+            if gatewayId == packet['toId'] or '^all' == packet['toId']:
+                direct = False if '^all' == packet['toId'] else True
+                destId = '^all' if '^all' == packet['toId'] else packet['fromId']
+                response = handleRfCommand(packet['decoded']['text'], direct)
+                if response != None:
+                    interface.sendText(response, destinationId = destId, wantAck = False)
 
         elif packet['decoded']['portnum'] == 'TRACEROUTE_APP':
             print('{}: TRACEROUTE_APP: rxSnr: {}, hopLimit: {}, wantAck: {}, rxRssi: {}, hopStart: {}'.format(
@@ -233,6 +236,7 @@ def connectAndLoginToAprsIs(connectRetry = 3):
                 noop = True
 
             sock.close()
+            sock = None
 
         try:
             sock = socket(AF_INET, SOCK_STREAM)
@@ -249,6 +253,7 @@ def connectAndLoginToAprsIs(connectRetry = 3):
                 aprsISConected = True
                 return True
             else:
+                print('Did not receive login verification.')
                 aprsISConected = False
                 if sock != None:
                     sock.shutdown(0)
@@ -258,21 +263,33 @@ def connectAndLoginToAprsIs(connectRetry = 3):
             print('An exception occurred: {}'.format(e))
             traceback.print_exc()
 
+    try:
+        sock.shutdown(0)
+    except Exception as e:
+        # do something...
+        noop = True
+
+    sock.close()
+    sock = None
+
     return False
 
-def handleRfCommand(message):
-    if 'about' in message.lower():
+def handleRfCommand(message, direct):
+    if 'about' == message.lower():
         print('Received "about": {}'.format(message))
         return 'KD7UBJ Meshtastic iGate v{}. Send "commands" to list services.'.format(version)
-    elif 'commands' in message.lower():
+    elif 'commands' == message.lower():
         print('Received "commands": {}'.format(message))
         return '"about" this iGate. "commands" to list possible commands. "ping" to receive pong'
-    elif 'ping' in message.lower():
+    elif 'ping' == message.lower():
         print('Received "ping": {}'.format(message))
         return 'pong'
     else:
         print('Received unknown command: {}'.format(message))
-        return 'Unknown command: {}. Send "commands" to list services.'.format(message)
+        if direct:
+            return 'Unknown command: {}. Send "commands" to list services.'.format(message)
+
+    return None
 
 def insertIntoNodeTable(id, longName, shortName, hwModel):
     global nodeTable
