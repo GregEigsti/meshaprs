@@ -4,23 +4,26 @@ from pubsub import pub
 import meshtastic
 import meshtastic.serial_interface
 import time
+import datetime
+# import threading
 import sys
 from socket import *
 import traceback 
 import select
+# meshtastic-mqtt
 
 
 interface = None
 spin = True
 nodeTable = {}
 encryptedTable = {}
-gatewayId = ''
+gatewayId = 'N/A'
 sock = None
 serverHost = 'northwest.aprs2.net'
 serverPort = 14578
 callSign = 'your_callsign'
 callPass = 'your_callsign_pass_code'
-version = '0.0.1'
+version = '0.0.2'
 aprsISConected = False
 
 
@@ -39,16 +42,19 @@ def onReceive(packet, interface): # called when a packet arrives
     try:
         # skip encrypted packets as they cannot be decoded (easily)
         if 'encrypted' in packet:
-            print('\nSkipping encrypted packet from {} ({}) to {}'.format(hex(int(packet['id'])), packet['id'], packet['toId']))
-            insertIntoEncryptedTable(packet['from'], packet['to'], packet['channel'])
+            print('\nSkipping encrypted packet from {} to {} on channel {}'.format(packet['fromId'], packet['toId'], packet['channel']))
+            insertIntoEncryptedTable(packet['fromId'], packet['toId'], packet['channel'])
             return
 
         # print from / to line
-        print('\n{}: {}: {} => {}'.format(
+        print('\n{}: {}: {} => {} on channel {}'.format(
             time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
             packet['decoded']['portnum'],
             packet['fromId'] if packet['fromId'] != None else 'N/A',
-            packet['toId']))
+            packet['toId'],
+            packet['channel'] if 'channel' in packet else 'N/A'
+            )
+        )
 
         if packet['decoded']['portnum'] == 'TELEMETRY_APP':
             print('{}: TELEMETRY_APP: batteryLevel: {}, voltage: {}, channelUtilization: {}, airUtilTx: {}'.format(
@@ -108,9 +114,14 @@ def onReceive(packet, interface): # called when a packet arrives
             if gatewayId == packet['toId'] or '^all' == packet['toId']:
                 direct = False if '^all' == packet['toId'] else True
                 destId = '^all' if '^all' == packet['toId'] else packet['fromId']
+
+                channel = 0
+                if direct == False and 'channel' in packet:
+                    channel = packet['channel']
+
                 response = handleRfCommand(packet['decoded']['text'], direct)
                 if response != None:
-                    interface.sendText(response, destinationId = destId, wantAck = False)
+                    interface.sendText(response, destinationId = destId, wantAck = False, channelIndex = channel)
 
         elif packet['decoded']['portnum'] == 'TRACEROUTE_APP':
             print('{}: TRACEROUTE_APP: rxSnr: {}, hopLimit: {}, wantAck: {}, rxRssi: {}, hopStart: {}'.format(
@@ -126,9 +137,9 @@ def onReceive(packet, interface): # called when a packet arrives
         elif packet['decoded']['portnum'] == 'ROUTING_APP':
             print('{}: ROUTING_APP: rxSnr: {}, hopLimit: {}, rxRssi: {}'.format(
                 time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
-                packet['rxSnr'],
-                packet['hopLimit'],
-                packet['rxRssi']
+                dictValueOrDefault('rxSnr', packet),
+                dictValueOrDefault('hopLimit', packet),
+                dictValueOrDefault('rxRssi', packet)
                 )
             )
 
@@ -153,7 +164,6 @@ def onReceive(packet, interface): # called when a packet arrives
             time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
             dictValueOrDefault('portnum', packet['decoded']),
             dictValueOrDefault('id', packet),
-            # dictValueOrDefault('rxTime', packet),
             time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
             dictValueOrDefault('hopLimit', packet),
             dictValueOrDefault('rxSnr', packet),
@@ -232,8 +242,7 @@ def connectAndLoginToAprsIs(connectRetry = 3):
             try:
                 sock.shutdown(0)
             except Exception as e:
-                # do something...
-                noop = True
+                pass
 
             sock.close()
             sock = None
@@ -243,7 +252,7 @@ def connectAndLoginToAprsIs(connectRetry = 3):
             sock.connect((serverHost, serverPort))
 
             time.sleep(1)
-            login = 'user {} pass {} vers "KD7UBJ Meshtastic iGate v{}" \n'.format(callSign, callPass, version)
+            login = 'user {} pass {} vers "KD7UBJ Meshtastic APRS/MQTT iGate v{}" \n'.format(callSign, callPass, version)
             sock.send(login.encode())
             time.sleep(1)
             data = sock.recv(1024)
@@ -275,9 +284,12 @@ def connectAndLoginToAprsIs(connectRetry = 3):
     return False
 
 def handleRfCommand(message, direct):
+    global version
+    global gatewayId
+
     if 'about' == message.lower():
         print('Received "about": {}'.format(message))
-        return 'KD7UBJ Meshtastic iGate v{}. Send "commands" to list services.'.format(version)
+        return 'KD7UBJ Meshtastic APRS/MQTT iGate ({}) v{}. Send "commands" to list services.'.format(gatewayId, version)
     elif 'commands' == message.lower():
         print('Received "commands": {}'.format(message))
         return '"about" this iGate. "commands" to list possible commands. "ping" to receive pong'
@@ -313,7 +325,8 @@ def decimal_degrees_to_aprs(latitude, longitude):
     
     return lat_aprs, lon_aprs
 
-def getMyNodeInfo(interface):
+def getMyNodeInfo():
+    global interface
     global gatewayId
 
     thisNode = interface.getMyNodeInfo()
@@ -338,29 +351,29 @@ def getMyNodeInfo(interface):
     
     print('===============================================')
 
-def displayNodes(interface):
+def displayNodes():
+    global interface
     global nodeTable
 
     try:
-        for node in (sorted(interface.nodes.values(), key=lambda d: d['lastHeard'], reverse = True)):
-            # print('\n{}\n'.format(node))
-            print("ID: {} ({}), NAME: {} ({}), MAC: {}, HWMODEL: {}, LAT: {}, LON: {}, ALT: {}, TIME: {}, LAST: {}".format(
+        # for node in (sorted(interface.nodes.values(), key = lambda d: d['lastHeard'], reverse = True)):
+        for node in interface.nodes.values():
+            print("ID: {} ({}), NAME: {} ({}), MAC: {}, HWMODEL: {}, ROLE: {}, LAT: {}, LON: {}, ALT: {}, TIME: {}, LAST: {}".format(
                 node['user']['id'],
                 node['num'],
                 node['user']['longName'],
                 node['user']['shortName'],
                 node['user']['macaddr'],
                 node['user']['hwModel'],
+                node['user']['role'] if 'role' in node['user'] else 'N/A',
                 node['position']['latitude'] if 'position' in node and 'latitude' in node['position'] else 'N/A',
                 node['position']['longitude'] if 'position' in node and 'longitude' in node['position'] else 'N/A',
                 node['position']['altitude'] if 'position' in node and 'altitude' in node['position'] else 'N/A',
                 node['position']['time'] if 'position' in node else 'N/A',
-                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(node['lastHeard']))
+                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(node['lastHeard'])) if 'position' in node else 'N/A'
                 )
             )
-
             insertIntoNodeTable(node['user']['id'], node['user']['longName'], node['user']['shortName'], node['user']['hwModel'])
-
         print('===============================================')
     except Exception as e:
         print('An exception occurred: {}'.format(e))
@@ -405,17 +418,19 @@ def handleKeyboardCommand(command):
         spin = False
     elif command.lower() == 'n':
         print('\n===============================================\nnodes seen:')
-        displayNodes(interface)
+        displayNodes()
+    elif command.lower() == 'i':
+        print('\n===============================================\nbroadcast ident:')
+        broadcastIdent()
+        print('===============================================')
     elif command.lower() == 'e':
         print('\n===============================================\nencrypted nodes:')
-        # print(encryptedTable)
         try:
-            for node in encryptedTable:
-                # print('\n{}\n'.format(node))
+            for key in encryptedTable:
                 print("FROM: {}, TO: {}, CHANNEL: {}".format(
-                    node['from'],
-                    node['to'],
-                    node['channel']
+                    key,
+                    encryptedTable[key]['to'],
+                    encryptedTable[key]['channel']
                     )
                 )
         except Exception as e:
@@ -425,11 +440,23 @@ def handleKeyboardCommand(command):
         print('===============================================')
     elif command.lower() == 'c':
         print('\n===============================================\ncommands:')
+        print('i => broadcast ident')
         print('c => show available commands')
         print('e => show nodes using encryption')
         print('n => show nodes table')
         print('q => quit')
         print('===============================================')
+
+def broadcastIdent():
+    global interface
+    global version
+    global gatewayId
+
+    ident = 'KD7UBJ Meshtastic APRS/MQTT iGate ({}) v{}. Send "commands" to list services.'.format(gatewayId, version)
+    print('\n{} Broadcasting Ident: {}'.format(datetime.datetime.now(), ident))
+    interface.sendText(ident, destinationId = '^all', wantAck = False)
+    # timer thread / callback is not truly cancellable and interferes with quit
+    # threading.Timer(60 * 60, broadcastIdent).start()
 
 def main():
     global interface
@@ -451,12 +478,21 @@ def main():
     pub.subscribe(onConnectionLost, 'meshtastic.connection.lost')
 
     time.sleep(2)
-    getMyNodeInfo(interface)
-    displayNodes(interface)
+    getMyNodeInfo()
+    displayNodes()
 
     pub.subscribe(onReceive, 'meshtastic.receive')
 
+    broadcastIdent()
+
+    spinCount = 0
     while (spin == True):
+        if spinCount >= 20 * 60 * 4:
+            spinCount = 0
+            broadcastIdent()
+        else:
+            spinCount += 1
+
         workSleep(.5)
 
     interface.close()
