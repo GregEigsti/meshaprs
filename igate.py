@@ -5,34 +5,34 @@ import meshtastic
 import meshtastic.serial_interface
 import time
 import datetime
-# import threading
 import sys
 from socket import *
 import traceback 
 import select
-# meshtastic-mqtt
 
 
 interface = None
 spin = True
+messageTable = {}
 nodeTable = {}
-encryptedTable = {}
+encryptedTable = []
+aprsTable = []
 gatewayId = 'N/A'
 sock = None
 serverHost = 'northwest.aprs2.net'
 serverPort = 14578
 callSign = 'your_callsign'
 callPass = 'your_callsign_pass_code'
-version = '0.0.2'
+version = '0.0.3'
 aprsISConected = False
 
 
 def onConnectionEstablished(interface, topic=pub.AUTO_TOPIC): # called when we (re)connect to the radio
-  print ('onConnectionEstablished')
+  print ('Connected to Meshtastic device')
 
 def onConnectionLost(interface, topic=pub.AUTO_TOPIC): # called when we (re)connect to the radio
     global spin
-    print ('onConnectionLost')
+    print ('Disconnected from Meshtastic device')
     spin = False
 
 def onReceive(packet, interface): # called when a packet arrives
@@ -43,7 +43,8 @@ def onReceive(packet, interface): # called when a packet arrives
         # skip encrypted packets as they cannot be decoded (easily)
         if 'encrypted' in packet:
             print('\nSkipping encrypted packet from {} to {} on channel {}'.format(packet['fromId'], packet['toId'], packet['channel']))
-            insertIntoEncryptedTable(packet['fromId'], packet['toId'], packet['channel'])
+            insertIntoEncryptedTable(packet['rxTime'], packet['fromId'], packet['toId'], packet['channel'])
+            print(packet)
             return
 
         # print from / to line
@@ -111,17 +112,28 @@ def onReceive(packet, interface): # called when a packet arrives
             # someday... convert to APRS format and write APRS packet to APRS-IS?
 
             # if packet is dm to this node send appropriate response
+            channel = 0
             if gatewayId == packet['toId'] or '^all' == packet['toId']:
                 direct = False if '^all' == packet['toId'] else True
                 destId = '^all' if '^all' == packet['toId'] else packet['fromId']
 
-                channel = 0
                 if direct == False and 'channel' in packet:
                     channel = packet['channel']
 
                 response = handleRfCommand(packet['decoded']['text'], direct)
                 if response != None:
                     interface.sendText(response, destinationId = destId, wantAck = False, channelIndex = channel)
+
+            insertIntoMessageTable(
+                packet['rxTime'],
+                packet['fromId'] if packet['fromId'] != None else 'N/A',
+                packet['toId'],
+                channel,
+                packet['rxSnr'],
+                packet['rxRssi'],
+                packet['hopLimit'],
+                packet['decoded']['text']
+            )
 
         elif packet['decoded']['portnum'] == 'TRACEROUTE_APP':
             print('{}: TRACEROUTE_APP: rxSnr: {}, hopLimit: {}, wantAck: {}, rxRssi: {}, hopStart: {}'.format(
@@ -149,6 +161,15 @@ def onReceive(packet, interface): # called when a packet arrives
                 packet['rxSnr'],
                 packet['hopLimit'],
                 packet['rxRssi']
+                )
+            )
+
+        elif packet['decoded']['portnum'] == 'RANGE_TEST_APP':
+            print('{}: RANGE_TEST_APP: payload: {}, rxSnr: {}, rxRssi: {}'.format(
+                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
+                packet['decoded']['payload'].decode('ascii'),
+                dictValueOrDefault('rxSnr', packet),
+                dictValueOrDefault('rxRssi', packet)
                 )
             )
 
@@ -210,6 +231,7 @@ def sendToAprsIs(packet, connectRetry = 3):
             try:
                 sock.send((aprsPacket + '\n').encode())
                 print(aprsPacket)
+                insertIntoAprsTable(packet['rxTime'], aprsPacket)
                 return
             except Exception as e:
                 aprsISConected = False
@@ -275,8 +297,7 @@ def connectAndLoginToAprsIs(connectRetry = 3):
     try:
         sock.shutdown(0)
     except Exception as e:
-        # do something...
-        noop = True
+        pass
 
     sock.close()
     sock = None
@@ -292,7 +313,10 @@ def handleRfCommand(message, direct):
         return 'KD7UBJ Meshtastic APRS/MQTT iGate ({}) v{}. Send "commands" to list services.'.format(gatewayId, version)
     elif 'commands' == message.lower():
         print('Received "commands": {}'.format(message))
-        return '"about" this iGate. "commands" to list possible commands. "ping" to receive pong'
+        return '"about" this iGate. "commands" to list possible commands. "git" link to this server\'s python source code. "ping" to receive pong'
+    elif 'git' == message.lower():
+        print('Received "git": {}'.format(message))
+        return 'https://github.com/GregEigsti/meshaprs'
     elif 'ping' == message.lower():
         print('Received "ping": {}'.format(message))
         return 'pong'
@@ -303,13 +327,21 @@ def handleRfCommand(message, direct):
 
     return None
 
+def insertIntoMessageTable(rxTime, fromId, toId, channel, rxSnr, rxRssi, hopLimit, text):
+    global messageTable
+    messageTable[rxTime] = { 'fromId': fromId, 'toId': toId, 'channel': channel, 'rxSnr': rxSnr, 'rxRssi': rxRssi, 'hopLimit': hopLimit, 'text': text }
+
 def insertIntoNodeTable(id, longName, shortName, hwModel):
     global nodeTable
     nodeTable[id] = { 'longName': longName, 'shortName': shortName, 'hwModel': hwModel }
 
-def insertIntoEncryptedTable(_from, to, channel):
+def insertIntoEncryptedTable(rxTime, _from, to, channel):
     global encryptedTable
-    encryptedTable[_from] = { 'to': to, 'channel': channel }
+    encryptedTable.append([rxTime, _from, to, channel])
+
+def insertIntoAprsTable(rxTime, aprsPacket):
+    global aprsTable
+    aprsTable.append([rxTime, aprsPacket])
 
 def decimal_degrees_to_aprs(latitude, longitude):
     lat_deg = int(abs(latitude))
@@ -351,13 +383,78 @@ def getMyNodeInfo():
     
     print('===============================================')
 
+def displayMessages():
+    global messageTable
+
+    print('\n===============================================\n{} messages received:'.format(len(messageTable)))
+
+    try:
+        for key in messageTable:
+            print("rxTime: {}, fromId: {}, toId: {}, channel: {}, rxSnr: {}, rxRssi: {}, hopLimit: {}, text: {}".format(
+                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(key)),
+                messageTable[key]['fromId'],
+                messageTable[key]['toId'],
+                messageTable[key]['channel'],
+                messageTable[key]['rxSnr'],
+                messageTable[key]['rxRssi'],
+                messageTable[key]['hopLimit'],
+                messageTable[key]['text']
+                )
+            )
+    except Exception as e:
+        print('An exception occurred: {}'.format(e))
+        traceback.print_exc()
+
+    print('===============================================')
+
+def displayEncrypted():
+    global encryptedTable
+
+    print('\n===============================================\n{} encrypted items:'.format(len(encryptedTable)))
+
+    try:
+        for message in encryptedTable:
+            print('{}: From: {}, To: {}, Channel: {}'.format(
+                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(message[0])),
+                message[1],
+                message[2],
+                message[3]
+                )
+            )
+    except Exception as e:
+        print('An exception occurred: {}'.format(e))
+        traceback.print_exc()
+
+    print('===============================================')
+
+def displayAprs():
+    global aprsTable
+
+    print('\n===============================================\n{} APRS packets sent:'.format(len(aprsTable)))
+
+    try:
+        for packet in aprsTable:
+            print('{}: {}'.format(
+                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet[0])),
+                packet[1]
+                )
+            )
+    except Exception as e:
+        print('An exception occurred: {}'.format(e))
+        traceback.print_exc()
+
+    print('===============================================')
+
 def displayNodes():
     global interface
     global nodeTable
 
     try:
+        nodes = interface.nodes.values()
+        print('\n===============================================\n{} nodes seen:'.format(len(nodes)))
+
         # for node in (sorted(interface.nodes.values(), key = lambda d: d['lastHeard'], reverse = True)):
-        for node in interface.nodes.values():
+        for node in nodes:
             print("ID: {} ({}), NAME: {} ({}), MAC: {}, HWMODEL: {}, ROLE: {}, LAT: {}, LON: {}, ALT: {}, TIME: {}, LAST: {}".format(
                 node['user']['id'],
                 node['num'],
@@ -379,6 +476,58 @@ def displayNodes():
         print('An exception occurred: {}'.format(e))
         traceback.print_exc()
 
+def broadcastIdent():
+    global interface
+    global version
+    global gatewayId
+
+    ident = 'KD7UBJ Meshtastic APRS/MQTT iGate ({}) v{}. Send "commands" to list services.'.format(gatewayId, version)
+    print('\n{} Broadcasting Ident: {}'.format(datetime.datetime.now(), ident))
+    interface.sendText(ident, destinationId = '^all', wantAck = False)
+
+# sb 0 this is a test broadcast message to channel 0
+# sb 1 this is a test broadcast message to channel 1
+def sendBroadcastMessage(command):
+    global interface
+
+    print('\n===============================================\nsend broadcast message:')
+
+    try:
+        print(command)
+        parts = command.split()
+        print('count   : {}'.format(len(parts))) # 4
+        print('ch-index: {}'.format(parts[1]))
+        print('message : {}'.format(" ".join(parts[2:])))
+
+        retVal = interface.sendText(" ".join(parts[2:]), destinationId = '^all', channelIndex = int(parts[1]), wantAck = True)
+        print(retVal)
+    except Exception as e:
+        print('An exception occurred: {}'.format(e))
+        traceback.print_exc()
+
+    print('===============================================')
+
+# sd !10a37e85 this is a direct message to !10a37e85
+def sendDirectMessage(command):
+    global interface
+
+    print('\n===============================================\nsend direct message:')
+
+    try:
+        print(command)
+        parts = command.split()
+        print('count  : {}'.format(len(parts))) # 4
+        print('to     : {}'.format(parts[1]))
+        print('message: {}'.format(" ".join(parts[2:])))
+
+        retVal = interface.sendText(" ".join(parts[2:]), destinationId = parts[1], wantAck = True)
+        print(retVal)
+    except Exception as e:
+        print('An exception occurred: {}'.format(e))
+        traceback.print_exc()
+
+    print('===============================================')
+
 def dictValueOrDefault(key, parent, default = 'N/A'):
     return parent[key] if key in parent else default
 
@@ -386,7 +535,7 @@ def pollKeyboard():
     while sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
         line = sys.stdin.readline()
         if line:
-            return line[0]
+            return line
 
     return None
 
@@ -407,56 +556,49 @@ def workSleep(seconds):
 
 def handleKeyboardCommand(command):
     global interface
-    global encryptedTable
     global spin
 
     if command == None:
         return
 
-    if command.lower() == 'q':
-        print('Quitting...')
-        spin = False
-    elif command.lower() == 'n':
-        print('\n===============================================\nnodes seen:')
-        displayNodes()
-    elif command.lower() == 'i':
+    if command.lower().startswith('a'):
+        displayAprs()
+    elif command.lower().startswith('c'):
+        printKbdCommands()
+    elif command.lower().startswith('e'):
+        displayEncrypted()
+    elif command.lower().startswith('i'):
         print('\n===============================================\nbroadcast ident:')
         broadcastIdent()
         print('===============================================')
-    elif command.lower() == 'e':
-        print('\n===============================================\nencrypted nodes:')
-        try:
-            for key in encryptedTable:
-                print("FROM: {}, TO: {}, CHANNEL: {}".format(
-                    key,
-                    encryptedTable[key]['to'],
-                    encryptedTable[key]['channel']
-                    )
-                )
-        except Exception as e:
-            print('An exception occurred: {}'.format(e))
-            traceback.print_exc()
+    elif command.lower().startswith('m'):
+        displayMessages()
+    elif command.lower().startswith('n'):
+        displayNodes()
+    elif command.lower().startswith('q'):
+        print('Quitting...')
+        spin = False
+    elif command.lower().startswith('sb'):
+        sendBroadcastMessage(command)
+    elif command.lower().startswith('sd'):
+        sendDirectMessage(command)
+    else:
+        print('Unknown keyboard command')
 
-        print('===============================================')
-    elif command.lower() == 'c':
-        print('\n===============================================\ncommands:')
-        print('i => broadcast ident')
-        print('c => show available commands')
-        print('e => show nodes using encryption')
-        print('n => show nodes table')
-        print('q => quit')
-        print('===============================================')
-
-def broadcastIdent():
-    global interface
-    global version
-    global gatewayId
-
-    ident = 'KD7UBJ Meshtastic APRS/MQTT iGate ({}) v{}. Send "commands" to list services.'.format(gatewayId, version)
-    print('\n{} Broadcasting Ident: {}'.format(datetime.datetime.now(), ident))
-    interface.sendText(ident, destinationId = '^all', wantAck = False)
-    # timer thread / callback is not truly cancellable and interferes with quit
-    # threading.Timer(60 * 60, broadcastIdent).start()
+def printKbdCommands():
+    print('\n===============================================\nkeyboard commands:')
+    print('a => show APRS data sent to the APRS-IS')
+    print('c => show available commands')
+    print('e => show nodes using encryption')
+    print('i => broadcast ident')
+    print('m => show received messages')
+    print('n => show nodes table')
+    print('q => quit')
+    print('sb <ch-index> <message> => send broadcast message')
+    # sb 0 this is a test broadcast message to channel 0
+    print('sd <to> <message> => send direct message')
+    # sd !10a37e85 this is a direct message to !10a37e85
+    print('===============================================')
 
 def main():
     global interface
@@ -480,6 +622,7 @@ def main():
     time.sleep(2)
     getMyNodeInfo()
     displayNodes()
+    printKbdCommands()
 
     pub.subscribe(onReceive, 'meshtastic.receive')
 
