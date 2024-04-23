@@ -16,14 +16,14 @@ spin = True
 messageTable = {}
 nodeTable = {}
 encryptedTable = []
-aprsTable = []
+aprsTable = {}
 gatewayId = 'N/A'
 sock = None
 serverHost = 'northwest.aprs2.net'
 serverPort = 14578
 callSign = 'your_callsign'
 callPass = 'your_callsign_pass_code'
-version = '0.0.3'
+version = '0.0.4'
 aprsISConected = False
 
 
@@ -43,13 +43,13 @@ def onReceive(packet, interface): # called when a packet arrives
         # skip encrypted packets as they cannot be decoded (easily)
         if 'encrypted' in packet:
             print('\nSkipping encrypted packet from {} to {} on channel {}'.format(packet['fromId'], packet['toId'], packet['channel']))
-            insertIntoEncryptedTable(packet['rxTime'], packet['fromId'], packet['toId'], packet['channel'])
+            insertIntoEncryptedTable(packet['rxTime'], packet['fromId'], packet['from'], packet['toId'], packet['to'], packet['channel'])
             print(packet)
             return
 
         # print from / to line
         print('\n{}: {}: {} => {} on channel {}'.format(
-            time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
+            time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])) if 'rxTime' in packet else 'N/A',
             packet['decoded']['portnum'],
             packet['fromId'] if packet['fromId'] != None else 'N/A',
             packet['toId'],
@@ -181,12 +181,13 @@ def onReceive(packet, interface): # called when a packet arrives
             )
             print('packet: {}'.format(packet))
 
-        print('{}: {}: id: {}, rxTime: {}, hopLimit: {}, rxSnr: {}, rxRssi: {}, priority: {}'.format(
+        print('{}: {}: id: {}, rxTime: {}, hopLimit: {}, hopStart: {}, rxSnr: {}, rxRssi: {}, priority: {}'.format(
             time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
             dictValueOrDefault('portnum', packet['decoded']),
             dictValueOrDefault('id', packet),
             time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
             dictValueOrDefault('hopLimit', packet),
+            dictValueOrDefault('hopStart', packet),
             dictValueOrDefault('rxSnr', packet),
             dictValueOrDefault('rxRssi', packet),
             dictValueOrDefault('priority', packet)
@@ -231,7 +232,7 @@ def sendToAprsIs(packet, connectRetry = 3):
             try:
                 sock.send((aprsPacket + '\n').encode())
                 print(aprsPacket)
-                insertIntoAprsTable(packet['rxTime'], aprsPacket)
+                insertIntoAprsTable(packet['rxTime'], packet['fromId'], nodeTable[packet['fromId']]['shortName'], nodeTable[packet['fromId']]['longName'], nodeTable[packet['fromId']]['hwModel'])
                 return
             except Exception as e:
                 aprsISConected = False
@@ -335,13 +336,17 @@ def insertIntoNodeTable(id, longName, shortName, hwModel):
     global nodeTable
     nodeTable[id] = { 'longName': longName, 'shortName': shortName, 'hwModel': hwModel }
 
-def insertIntoEncryptedTable(rxTime, _from, to, channel):
+def insertIntoEncryptedTable(rxTime, fromId, _from, toId, to, channel):
     global encryptedTable
-    encryptedTable.append([rxTime, _from, to, channel])
+    encryptedTable.append([rxTime, fromId, _from, toId, to, channel])
 
-def insertIntoAprsTable(rxTime, aprsPacket):
+def insertIntoAprsTable(rxTime, fromId, shortName, longName, hwModel):
     global aprsTable
-    aprsTable.append([rxTime, aprsPacket])
+
+    count = 1
+    if fromId in aprsTable:
+        count = aprsTable[fromId]['count'] + 1
+    aprsTable[fromId] = { 'rxTime': rxTime, 'count': count, 'shortName': shortName, 'longName': longName, 'hwModel': hwModel }
 
 def decimal_degrees_to_aprs(latitude, longitude):
     lat_deg = int(abs(latitude))
@@ -414,11 +419,13 @@ def displayEncrypted():
 
     try:
         for message in encryptedTable:
-            print('{}: From: {}, To: {}, Channel: {}'.format(
+            print('{}: fromId: {}, from: {}, toId: {}, to: {}, channel: {}'.format(
                 time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(message[0])),
                 message[1],
                 message[2],
-                message[3]
+                message[3],
+                message[4],
+                message[5]
                 )
             )
     except Exception as e:
@@ -430,13 +437,17 @@ def displayEncrypted():
 def displayAprs():
     global aprsTable
 
-    print('\n===============================================\n{} APRS packets sent:'.format(len(aprsTable)))
+    print('\n===============================================\n{} APRS participants:'.format(len(aprsTable)))
 
     try:
-        for packet in aprsTable:
-            print('{}: {}'.format(
-                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet[0])),
-                packet[1]
+        for key in aprsTable:
+            print("rxTime: {}, count: {}, fromId: {}, shortName: {}, longName: {}, hwModel: {}, ".format(
+                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(aprsTable[key]['rxTime'])),
+                aprsTable[key]['count'],
+                key,
+                aprsTable[key]['shortName'],
+                aprsTable[key]['longName'],
+                aprsTable[key]['hwModel']
                 )
             )
     except Exception as e:
@@ -587,7 +598,7 @@ def handleKeyboardCommand(command):
 
 def printKbdCommands():
     print('\n===============================================\nkeyboard commands:')
-    print('a => show APRS data sent to the APRS-IS')
+    print('a => show APRS participants sent to the APRS-IS')
     print('c => show available commands')
     print('e => show nodes using encryption')
     print('i => broadcast ident')
