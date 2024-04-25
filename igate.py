@@ -23,7 +23,7 @@ serverHost = 'northwest.aprs2.net'
 serverPort = 14578
 callSign = 'your_callsign'
 callPass = 'your_callsign_pass_code'
-version = '0.0.4'
+version = '0.0.5'
 aprsISConected = False
 
 
@@ -48,12 +48,15 @@ def onReceive(packet, interface): # called when a packet arrives
             return
 
         # print from / to line
-        print('\n{}: {}: {} => {} on channel {}'.format(
+        print('\n{}: {}: {} - {} - {} => {} on channel {} with {}'.format(
             time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])) if 'rxTime' in packet else 'N/A',
             packet['decoded']['portnum'],
+            nodeTable[packet['fromId']]['shortName'] if packet['fromId'] in nodeTable else 'N/A',
+            nodeTable[packet['fromId']]['longName']  if packet['fromId'] in nodeTable else 'N/A',
             packet['fromId'] if packet['fromId'] != None else 'N/A',
             packet['toId'],
-            packet['channel'] if 'channel' in packet else 'N/A'
+            packet['channel'] if 'channel' in packet else 'N/A',
+            nodeTable[packet['fromId']]['hwModel'] if packet['fromId'] in nodeTable else 'N/A'
             )
         )
 
@@ -109,7 +112,7 @@ def onReceive(packet, interface): # called when a packet arrives
                 )
             )
 
-            # someday... convert to APRS format and write APRS packet to APRS-IS?
+            # someday... convert to APRS format and write APRS message packet to APRS-IS?
 
             # if packet is dm to this node send appropriate response
             channel = 0
