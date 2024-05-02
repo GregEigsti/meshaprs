@@ -5,6 +5,7 @@ import meshtastic
 import meshtastic.serial_interface
 import time
 import datetime
+import threading
 import sys
 from socket import *
 import traceback 
@@ -13,6 +14,7 @@ import select
 
 interface = None
 spin = True
+identTimer = None
 messageTable = {}
 nodeTable = {}
 encryptedTable = []
@@ -23,7 +25,7 @@ serverHost = 'northwest.aprs2.net'
 serverPort = 14578
 callSign = 'your_callsign'
 callPass = 'your_callsign_pass_code'
-version = '0.0.5'
+version = '0.0.6'
 aprsISConected = False
 
 
@@ -42,12 +44,18 @@ def onReceive(packet, interface): # called when a packet arrives
     try:
         # skip encrypted packets as they cannot be decoded (easily)
         if 'encrypted' in packet:
-            print('\nSkipping encrypted packet from {} to {} on channel {}'.format(packet['fromId'], packet['toId'], packet['channel']))
+            print('\n{}: Skipping encrypted packet fromId: {} - {} - {} to {} on channel {}'.format(
+                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])) if 'rxTime' in packet else 'N/A',
+                packet['fromId'] if packet['fromId'] != None else 'N/A',
+                nodeTable[packet['fromId']]['longName']  if packet['fromId'] in nodeTable else 'N/A',
+                nodeTable[packet['fromId']]['shortName'] if packet['fromId'] in nodeTable else 'N/A',
+                packet['toId'],
+                packet['channel']
+                )
+            )
             insertIntoEncryptedTable(packet['rxTime'], packet['fromId'], packet['from'], packet['toId'], packet['to'], packet['channel'])
-            print(packet)
             return
 
-        # print from / to line
         print('\n{}: {}: {} - {} - {} => {} on channel {} with {}'.format(
             time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])) if 'rxTime' in packet else 'N/A',
             packet['decoded']['portnum'],
@@ -61,14 +69,31 @@ def onReceive(packet, interface): # called when a packet arrives
         )
 
         if packet['decoded']['portnum'] == 'TELEMETRY_APP':
-            print('{}: TELEMETRY_APP: batteryLevel: {}, voltage: {}, channelUtilization: {}, airUtilTx: {}'.format(
-                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
-                dictValueOrDefault('batteryLevel', packet['decoded']['telemetry']['deviceMetrics']),
-                dictValueOrDefault('voltage', packet['decoded']['telemetry']['deviceMetrics']),
-                dictValueOrDefault('channelUtilization', packet['decoded']['telemetry']['deviceMetrics']),
-                dictValueOrDefault('airUtilTx', packet['decoded']['telemetry']['deviceMetrics'])
+            if 'deviceMetrics' in packet['decoded']['telemetry']:
+                print('{}: TELEMETRY_APP: batteryLevel: {}, voltage: {}, channelUtilization: {}, airUtilTx: {}'.format(
+                    time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
+                    dictValueOrDefault('batteryLevel', packet['decoded']['telemetry']['deviceMetrics']),
+                    dictValueOrDefault('voltage', packet['decoded']['telemetry']['deviceMetrics']),
+                    dictValueOrDefault('channelUtilization', packet['decoded']['telemetry']['deviceMetrics']),
+                    dictValueOrDefault('airUtilTx', packet['decoded']['telemetry']['deviceMetrics'])
+                    )
                 )
-            )
+            elif 'environmentMetrics' in packet['decoded']['telemetry']:
+                print('{}: TELEMETRY_APP: temperature: {}, relative_humidity: {}, barometric_pressure: {}, gas_resistance: {}, iaq: {}'.format(
+                    time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
+                    dictValueOrDefault('temperature', packet['decoded']['telemetry']['environmentMetrics']),
+                    dictValueOrDefault('relative_humidity', packet['decoded']['telemetry']['environmentMetrics']),
+                    dictValueOrDefault('barometric_pressure', packet['decoded']['telemetry']['environmentMetrics']),
+                    dictValueOrDefault('gas_resistance', packet['decoded']['telemetry']['environmentMetrics']),
+                    dictValueOrDefault('iaq', packet['decoded']['telemetry']['environmentMetrics'])
+                    )
+                )
+            else:
+                print('{}: TELEMETRY_APP: unknown payload\n{}'.format(
+                    time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
+                    packet
+                    )
+                )
 
         elif packet['decoded']['portnum'] == 'POSITION_APP':
             print('{}: POSITION_APP: latitude: {}, longitude: {}, altitude: {}, time: {}, satsInView: {}, precisionBits: {}, PDOP: {}, groundTrack: {}'.format(
@@ -173,6 +198,14 @@ def onReceive(packet, interface): # called when a packet arrives
                 packet['decoded']['payload'].decode('ascii'),
                 dictValueOrDefault('rxSnr', packet),
                 dictValueOrDefault('rxRssi', packet)
+                )
+            )
+
+        elif packet['decoded']['portnum'] == 'ADMIN_APP':
+            print('{}: ADMIN_APP: payload: {}, admin: {}'.format(
+                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
+                packet['decoded']['payload'].decode('ascii'),
+                packet['decoded']['admin']
                 )
             )
 
@@ -422,10 +455,12 @@ def displayEncrypted():
 
     try:
         for message in encryptedTable:
-            print('{}: fromId: {}, from: {}, toId: {}, to: {}, channel: {}'.format(
+            print('{}: fromId: {} - {} - {}, from: {}, toId: {}, to: {}, channel: {}'.format(
                 time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(message[0])),
-                message[1],
-                message[2],
+                message[1] if message[1] != None else 'N/A',
+                nodeTable[message[1]]['longName']  if message[1] in nodeTable else 'N/A',
+                nodeTable[message[1]]['shortName'] if message[1] in nodeTable else 'N/A',
+                message[2] if message[2] != None else 'N/A',
                 message[3],
                 message[4],
                 message[5]
@@ -444,7 +479,7 @@ def displayAprs():
 
     try:
         for key in aprsTable:
-            print("rxTime: {}, count: {}, fromId: {}, shortName: {}, longName: {}, hwModel: {}, ".format(
+            print("rxTime: {}, count: {}, fromId: {}, shortName: {}, longName: {}, hwModel: {}".format(
                 time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(aprsTable[key]['rxTime'])),
                 aprsTable[key]['count'],
                 key,
@@ -469,7 +504,7 @@ def displayNodes():
 
         # for node in (sorted(interface.nodes.values(), key = lambda d: d['lastHeard'], reverse = True)):
         for node in nodes:
-            print("ID: {} ({}), NAME: {} ({}), MAC: {}, HWMODEL: {}, ROLE: {}, LAT: {}, LON: {}, ALT: {}, TIME: {}, LAST: {}".format(
+            print("id: {} ({}), longName: {}, shortName: {}, macaddr: {}, hwModel: {}, role: {}, lat: {}, lon: {}, alt: {}, time: {}, lastHeard: {}".format(
                 node['user']['id'],
                 node['num'],
                 node['user']['longName'],
@@ -480,8 +515,8 @@ def displayNodes():
                 node['position']['latitude'] if 'position' in node and 'latitude' in node['position'] else 'N/A',
                 node['position']['longitude'] if 'position' in node and 'longitude' in node['position'] else 'N/A',
                 node['position']['altitude'] if 'position' in node and 'altitude' in node['position'] else 'N/A',
-                node['position']['time'] if 'position' in node else 'N/A',
-                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(node['lastHeard'])) if 'position' in node else 'N/A'
+                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(node['position']['time'])) if 'position' in node and 'time' in node['position'] else 'N/A',
+                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(node['lastHeard'])) if 'lastHeard' in node else 'N/A'
                 )
             )
             insertIntoNodeTable(node['user']['id'], node['user']['longName'], node['user']['shortName'], node['user']['hwModel'])
@@ -490,14 +525,19 @@ def displayNodes():
         print('An exception occurred: {}'.format(e))
         traceback.print_exc()
 
-def broadcastIdent():
+def broadcastIdent(createTimer = True):
     global interface
     global version
     global gatewayId
+    global identTimer
 
     ident = 'KD7UBJ Meshtastic APRS/MQTT iGate ({}) v{}. Send "commands" to list services.'.format(gatewayId, version)
     print('\n{} Broadcasting Ident: {}'.format(datetime.datetime.now(), ident))
     interface.sendText(ident, destinationId = '^all', wantAck = False)
+
+    if createTimer:
+        identTimer = threading.Timer(60 * 60 * 12, broadcastIdent)
+        identTimer.start()
 
 # sb 0 this is a test broadcast message to channel 0
 # sb 1 this is a test broadcast message to channel 1
@@ -583,7 +623,7 @@ def handleKeyboardCommand(command):
         displayEncrypted()
     elif command.lower().startswith('i'):
         print('\n===============================================\nbroadcast ident:')
-        broadcastIdent()
+        broadcastIdent(createTimer = False)
         print('===============================================')
     elif command.lower().startswith('m'):
         displayMessages()
@@ -618,6 +658,8 @@ def main():
     global interface
     global spin
     global sock
+    global identTimer
+
 
     # log in to APRS-IS server with passcode to allow writing
     # serverHost = 'first.aprs.net'
@@ -640,17 +682,13 @@ def main():
 
     pub.subscribe(onReceive, 'meshtastic.receive')
 
-    broadcastIdent()
+    broadcastIdent(createTimer = True)
 
-    spinCount = 0
     while (spin == True):
-        if spinCount >= 20 * 60 * 4:
-            spinCount = 0
-            broadcastIdent()
-        else:
-            spinCount += 1
-
         workSleep(.5)
+
+    if None != identTimer:
+        identTimer.cancel()
 
     interface.close()
     if sock != None:
