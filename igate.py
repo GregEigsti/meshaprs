@@ -25,7 +25,7 @@ serverHost = 'northwest.aprs2.net'
 serverPort = 14578
 callSign = 'your_callsign'
 callPass = 'your_callsign_pass_code'
-version = '0.0.6'
+version = '0.0.7'
 aprsISConected = False
 
 
@@ -42,13 +42,22 @@ def onReceive(packet, interface): # called when a packet arrives
     global gatewayId
 
     try:
+        hopLimit = packet['hopLimit'] if 'hopLimit' in packet else 0
+        hopStart = packet['hopStart'] if 'hopStart' in packet else hopLimit
+
+        if packet['fromId'] != None:
+            insertIntoNodeTable(packet['fromId'], packet)
+            nodeTable[packet['fromId']]['hopLimit'] = hopLimit
+            nodeTable[packet['fromId']]['hopStart'] = hopStart
+            nodeTable[packet['fromId']]['hops'] = hopStart - hopLimit
+
         # skip encrypted packets as they cannot be decoded (easily)
         if 'encrypted' in packet:
             print('\n{}: Skipping encrypted packet fromId: {} - {} - {} to {} on channel {}'.format(
                 time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])) if 'rxTime' in packet else 'N/A',
                 packet['fromId'] if packet['fromId'] != None else 'N/A',
-                nodeTable[packet['fromId']]['longName']  if packet['fromId'] in nodeTable else 'N/A',
-                nodeTable[packet['fromId']]['shortName'] if packet['fromId'] in nodeTable else 'N/A',
+                nodeTable[packet['fromId']]['longName']  if packet['fromId'] != None and packet['fromId'] in nodeTable else 'N/A',
+                nodeTable[packet['fromId']]['shortName'] if packet['fromId'] != None and packet['fromId'] in nodeTable else 'N/A',
                 packet['toId'],
                 packet['channel']
                 )
@@ -59,12 +68,12 @@ def onReceive(packet, interface): # called when a packet arrives
         print('\n{}: {}: {} - {} - {} => {} on channel {} with {}'.format(
             time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])) if 'rxTime' in packet else 'N/A',
             packet['decoded']['portnum'],
-            nodeTable[packet['fromId']]['shortName'] if packet['fromId'] in nodeTable else 'N/A',
-            nodeTable[packet['fromId']]['longName']  if packet['fromId'] in nodeTable else 'N/A',
             packet['fromId'] if packet['fromId'] != None else 'N/A',
+            nodeTable[packet['fromId']]['shortName'] if packet['fromId'] != None and packet['fromId'] in nodeTable else 'N/A',
+            nodeTable[packet['fromId']]['longName']  if packet['fromId'] != None and packet['fromId'] in nodeTable else 'N/A',
             packet['toId'],
             packet['channel'] if 'channel' in packet else 'N/A',
-            nodeTable[packet['fromId']]['hwModel'] if packet['fromId'] in nodeTable else 'N/A'
+            nodeTable[packet['fromId']]['hwModel'] if packet['fromId'] != None and packet['fromId'] in nodeTable else 'N/A'
             )
         )
 
@@ -79,12 +88,12 @@ def onReceive(packet, interface): # called when a packet arrives
                     )
                 )
             elif 'environmentMetrics' in packet['decoded']['telemetry']:
-                print('{}: TELEMETRY_APP: temperature: {}, relative_humidity: {}, barometric_pressure: {}, gas_resistance: {}, iaq: {}'.format(
+                print('{}: TELEMETRY_APP: temperature: {}, relativeHumidity: {}, barometricPressure: {}, gasResistance: {}, iaq: {}'.format(
                     time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
                     dictValueOrDefault('temperature', packet['decoded']['telemetry']['environmentMetrics']),
-                    dictValueOrDefault('relative_humidity', packet['decoded']['telemetry']['environmentMetrics']),
-                    dictValueOrDefault('barometric_pressure', packet['decoded']['telemetry']['environmentMetrics']),
-                    dictValueOrDefault('gas_resistance', packet['decoded']['telemetry']['environmentMetrics']),
+                    dictValueOrDefault('relativeHumidity', packet['decoded']['telemetry']['environmentMetrics']),
+                    dictValueOrDefault('barometricPressure', packet['decoded']['telemetry']['environmentMetrics']),
+                    dictValueOrDefault('gasResistance', packet['decoded']['telemetry']['environmentMetrics']),
                     dictValueOrDefault('iaq', packet['decoded']['telemetry']['environmentMetrics'])
                     )
                 )
@@ -115,21 +124,15 @@ def onReceive(packet, interface): # called when a packet arrives
         elif packet['decoded']['portnum'] == 'NODEINFO_APP':
             print('{}: NODEINFO_APP: id: {}, longName: {}, shortName: {}, macaddr: {}, hwModel: {}, wantResponse: {}'.format(
                 time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
-                dictValueOrDefault('wantResponse', packet['decoded']),
                 dictValueOrDefault('id', packet['decoded']['user']),
                 dictValueOrDefault('longName', packet['decoded']['user']),
                 dictValueOrDefault('shortName', packet['decoded']['user']),
                 dictValueOrDefault('macaddr', packet['decoded']['user']),
-                dictValueOrDefault('hwModel', packet['decoded']['user'])
+                dictValueOrDefault('hwModel', packet['decoded']['user']),
+                dictValueOrDefault('wantResponse', packet['decoded'])
                 )
             )
 
-            insertIntoNodeTable(
-                packet['decoded']['user']['id'],
-                packet['decoded']['user']['longName'],
-                packet['decoded']['user']['shortName'],
-                packet['decoded']['user']['hwModel'])
-            
         elif packet['decoded']['portnum'] == 'TEXT_MESSAGE_APP':
             print('{}: TEXT_MESSAGE_APP: {}'.format(
                 time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
@@ -217,13 +220,14 @@ def onReceive(packet, interface): # called when a packet arrives
             )
             print('packet: {}'.format(packet))
 
-        print('{}: {}: id: {}, rxTime: {}, hopLimit: {}, hopStart: {}, rxSnr: {}, rxRssi: {}, priority: {}'.format(
+        print('{}: {}: id: {}, rxTime: {}, hopLimit: {}, hopStart: {}, hops: {}, rxSnr: {}, rxRssi: {}, priority: {}'.format(
             time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
             dictValueOrDefault('portnum', packet['decoded']),
             dictValueOrDefault('id', packet),
             time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
-            dictValueOrDefault('hopLimit', packet),
+            hopLimit,
             dictValueOrDefault('hopStart', packet),
+            hopStart - hopLimit,
             dictValueOrDefault('rxSnr', packet),
             dictValueOrDefault('rxRssi', packet),
             dictValueOrDefault('priority', packet)
@@ -244,8 +248,9 @@ def sendToAprsIs(packet, connectRetry = 3):
     if packet['fromId'] != None and packet['fromId'] in nodeTable and 'latitude' in packet['decoded']['position'] and 'longitude' in packet['decoded']['position']:
         lat_aprs, lon_aprs = decimal_degrees_to_aprs(packet['decoded']['position']['latitude'], packet['decoded']['position']['longitude'])
 
-        aprsPacket = 'MESH{}>APRS,qAR,{}:!{}/{}/Meshtastic {} ({}, {})'.format(
-            nodeTable[packet['fromId']]['shortName'],
+        # aprsPacket = 'MESH{}>APRS,qAR,{}:!{}/{}nMeshtastic {} ({}, {})'.format(
+        aprsPacket = 'MESH{}>APRS,qAR,{}:!{}\{}oMeshtastic {} ({}, {})'.format(
+            nodeTable[packet['fromId']]['shortName'].upper(),
             callSign,
             lat_aprs,
             lon_aprs,
@@ -368,9 +373,25 @@ def insertIntoMessageTable(rxTime, fromId, toId, channel, rxSnr, rxRssi, hopLimi
     global messageTable
     messageTable[rxTime] = { 'fromId': fromId, 'toId': toId, 'channel': channel, 'rxSnr': rxSnr, 'rxRssi': rxRssi, 'hopLimit': hopLimit, 'text': text }
 
-def insertIntoNodeTable(id, longName, shortName, hwModel):
+def insertIntoNodeTable(fromId, data):
     global nodeTable
-    nodeTable[id] = { 'longName': longName, 'shortName': shortName, 'hwModel': hwModel }
+
+    newDict = {}
+
+    if fromId in nodeTable:
+        newDict = nodeTable[fromId]
+
+    for key in data:
+        # TODO: add decoded dict?
+        # print('===> data[{}]: {}, {}'.format(key, data[key], type(data[key])))
+        if not isinstance(data[key], dict) and not isinstance(data[key], meshtastic.mesh_pb2.MeshPacket) and not key in ['from', 'to', 'priority', 'fromId', 'toId']:
+            newDict[key] = data[key]
+
+    nodeTable[fromId] = newDict
+
+    # print('--------------------------------------------------------------------------------')
+    # print(nodeTable[fromId])
+    # print('--------------------------------------------------------------------------------')
 
 def insertIntoEncryptedTable(rxTime, fromId, _from, toId, to, channel):
     global encryptedTable
@@ -426,19 +447,23 @@ def getMyNodeInfo():
 
 def displayMessages():
     global messageTable
+    global nodeTable
 
     print('\n===============================================\n{} messages received:'.format(len(messageTable)))
 
     try:
         for key in messageTable:
-            print("rxTime: {}, fromId: {}, toId: {}, channel: {}, rxSnr: {}, rxRssi: {}, hopLimit: {}, text: {}".format(
+            print("{}: {} - {} - {}, toId: {}, channel: {}, rxSnr: {}, rxRssi: {}, hopLimit: {}, hops: {}, text: {}".format(
                 time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(key)),
                 messageTable[key]['fromId'],
+                nodeTable[messageTable[key]['fromId']]['shortName'] if messageTable[key]['fromId'] in nodeTable else 'N/A',
+                nodeTable[messageTable[key]['fromId']]['longName']  if messageTable[key]['fromId'] in nodeTable else 'N/A',
                 messageTable[key]['toId'],
                 messageTable[key]['channel'],
                 messageTable[key]['rxSnr'],
                 messageTable[key]['rxRssi'],
                 messageTable[key]['hopLimit'],
+                nodeTable[messageTable[key]['fromId']]['hops'],
                 messageTable[key]['text']
                 )
             )
@@ -450,20 +475,22 @@ def displayMessages():
 
 def displayEncrypted():
     global encryptedTable
+    global nodeTable
 
     print('\n===============================================\n{} encrypted items:'.format(len(encryptedTable)))
 
     try:
         for message in encryptedTable:
-            print('{}: fromId: {} - {} - {}, from: {}, toId: {}, to: {}, channel: {}'.format(
+            print('{:19s}: {:9s} - {:4s} - {:36s}, from: {:10s}, toId: {:4s}, to: {:10s}, channel: {:3d}, hops: {:1d}'.format(
                 time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(message[0])),
                 message[1] if message[1] != None else 'N/A',
-                nodeTable[message[1]]['longName']  if message[1] in nodeTable else 'N/A',
-                nodeTable[message[1]]['shortName'] if message[1] in nodeTable else 'N/A',
+                nodeTable[message[1]]['shortName'] if message[1] != None and message[1] in nodeTable else 'N/A',
+                nodeTable[message[1]]['longName'] if message[1] != None and message[1] in nodeTable else 'N/A',
                 message[2] if message[2] != None else 'N/A',
                 message[3],
                 message[4],
-                message[5]
+                message[5],
+                nodeTable[message[1]]['hops'] if message[1] != None and message[1] in nodeTable else 'N/A'
                 )
             )
     except Exception as e:
@@ -479,13 +506,14 @@ def displayAprs():
 
     try:
         for key in aprsTable:
-            print("rxTime: {}, count: {}, fromId: {}, shortName: {}, longName: {}, hwModel: {}".format(
+            print("{:19s}: {:9s} - {:4s} - {:36s}, count: {:3d}, hwModel: {:21s}, hops: {:1d}".format(
                 time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(aprsTable[key]['rxTime'])),
-                aprsTable[key]['count'],
                 key,
                 aprsTable[key]['shortName'],
                 aprsTable[key]['longName'],
-                aprsTable[key]['hwModel']
+                aprsTable[key]['count'],
+                aprsTable[key]['hwModel'],
+                nodeTable[key]['hops']
                 )
             )
     except Exception as e:
@@ -504,11 +532,13 @@ def displayNodes():
 
         # for node in (sorted(interface.nodes.values(), key = lambda d: d['lastHeard'], reverse = True)):
         for node in nodes:
-            print("id: {} ({}), longName: {}, shortName: {}, macaddr: {}, hwModel: {}, role: {}, lat: {}, lon: {}, alt: {}, time: {}, lastHeard: {}".format(
+            insertIntoNodeTable(node['user']['id'], node['user'])
+
+            print("{} - {} - {} - {}, macaddr: {}, hwModel: {}, role: {}, lat: {}, lon: {}, alt: {}, time: {}, lastHeard: {}, hopsAway: {}, hopLimit: {}, hopStart: {}, hops: {}".format(
                 node['user']['id'],
-                node['num'],
-                node['user']['longName'],
                 node['user']['shortName'],
+                node['user']['longName'],
+                node['num'],
                 node['user']['macaddr'],
                 node['user']['hwModel'],
                 node['user']['role'] if 'role' in node['user'] else 'N/A',
@@ -516,10 +546,14 @@ def displayNodes():
                 node['position']['longitude'] if 'position' in node and 'longitude' in node['position'] else 'N/A',
                 node['position']['altitude'] if 'position' in node and 'altitude' in node['position'] else 'N/A',
                 time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(node['position']['time'])) if 'position' in node and 'time' in node['position'] else 'N/A',
-                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(node['lastHeard'])) if 'lastHeard' in node else 'N/A'
+                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(node['lastHeard'])) if 'lastHeard' in node else 'N/A',
+                node['hopsAway'] if 'hopsAway' in node else 'N/A',
+                nodeTable[node['user']['id']]['hopLimit'] if node['user']['id'] in nodeTable and 'hopLimit' in nodeTable[node['user']['id']] else 'N/A',
+                nodeTable[node['user']['id']]['hopStart'] if node['user']['id'] in nodeTable and 'hopStart' in nodeTable[node['user']['id']] else 'N/A',
+                nodeTable[node['user']['id']]['hops'] if node['user']['id'] in nodeTable and 'hops' in nodeTable[node['user']['id']] else 'N/A'
                 )
             )
-            insertIntoNodeTable(node['user']['id'], node['user']['longName'], node['user']['shortName'], node['user']['hwModel'])
+
         print('===============================================')
     except Exception as e:
         print('An exception occurred: {}'.format(e))
@@ -531,7 +565,7 @@ def broadcastIdent(createTimer = True):
     global gatewayId
     global identTimer
 
-    ident = 'KD7UBJ Meshtastic APRS/MQTT iGate ({}) v{}. Send "commands" to list services.'.format(gatewayId, version)
+    ident = 'KD7UBJ Meshtastic APRS/MQTT iGate ({}) v{}. Send "commands" to list services. https://discord.gg/5KUHrjbZ'.format(gatewayId, version)
     print('\n{} Broadcasting Ident: {}'.format(datetime.datetime.now(), ident))
     interface.sendText(ident, destinationId = '^all', wantAck = False)
 
@@ -682,7 +716,7 @@ def main():
 
     pub.subscribe(onReceive, 'meshtastic.receive')
 
-    broadcastIdent(createTimer = True)
+    # broadcastIdent(createTimer = True)
 
     while (spin == True):
         workSleep(.5)
