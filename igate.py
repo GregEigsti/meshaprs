@@ -11,12 +11,16 @@ from socket import *
 import traceback 
 import select
 
-interface = None
-spin = True
-identTimer = None
-gatewayId = 'N/A'
-version = '0.0.10'
+callSign = 'your_callsign'
+callPass = 'your_callsign_pass_code'
+version = '0.0.11'
 
+meshaprs = None
+nodes = None
+neighbors = None
+messages = None
+aprs = None
+encrypted = None
 
 class Helpers:
     def formatNodeString(self, _from, fromId, shortName, longName):
@@ -27,9 +31,16 @@ class Helpers:
             _from if _from != None else 'N/A'
         )
 
+    def dictValueOrDefault(self, key, parent, default = 'N/A'):
+        return parent[key] if key in parent else default
+
 class Nodes(Helpers):
     global interface
     nodeTable = {}
+    interface = None
+
+    def __init__(self, interface):
+        self.interface = interface
 
     def insert(self, _from, fromId, data):
         newDict = {}
@@ -38,6 +49,7 @@ class Nodes(Helpers):
         newDict['hopLimit'] = 'N/A'
         newDict['hopStart'] = 'N/A'
         newDict['hops'] = 'N/A'
+        newDict['seenCount'] = 0
 
         if _from in self.nodeTable:
             newDict = self.nodeTable[_from]
@@ -52,9 +64,9 @@ class Nodes(Helpers):
         return self.nodeTable
 
     def display(self):
-        print('\n==============================================================================================\n{} nodes seen:'.format(len(self.nodeTable)))
         try:
-            nodesHeard = interface.nodes.values()
+            nodesHeard = self.interface.nodes.values()
+            print('\n==============================================================================================\n{} nodes heard:'.format(len(nodesHeard)))
             for node in nodesHeard:
                 self.insert(node['num'], node['user']['id'], node['user'])
 
@@ -63,14 +75,14 @@ class Nodes(Helpers):
                     if self.nodeTable[node['num']]['hops'] == 'N/A':
                         self.nodeTable[node['num']]['hops'] = node['hopsAway']
 
-                nodeString = formatNodeString(
+                nodeString = self.formatNodeString(
                     str(node['num']),
                     node['user']['id'],
                     node['user']['shortName'],
                     node['user']['longName']
                 )
 
-                print("{}, macaddr: {}, hwModel: {}, role: {}, lat: {}, lon: {}, alt: {}, time: {}, lastHeard: {}, hopsAway: {}, hopLimit: {}, hopStart: {}, hops: {}".format(
+                print('{}, macaddr: {}, hwModel: {}, role: {}, lat: {}, lon: {}, alt: {}, time: {}, lastHeard: {}, hopsAway: {}, hopLimit: {}, hopStart: {}, hops: {}'.format(
                     nodeString,
                     node['user']['macaddr'],
                     node['user']['hwModel'],
@@ -89,6 +101,70 @@ class Nodes(Helpers):
         except Exception as e:
             print('An exception occurred: {}'.format(e))
             traceback.print_exc()
+        print('==============================================================================================')
+
+    def displayRecent(self):
+        try:
+            # nodesHeard = dict(filter(lambda node: (self.nodeTable[node]['seenCount'] > 0), self.nodeTable))
+            # print(nodesHeard)
+            # An exception occurred: cannot convert dictionary update sequence element #0 to a sequence
+            # Traceback (most recent call last):
+            # File "/home/greg/src/python/meshtastic/meshaprs/igate.py", line 108, in displayRecent
+            #     nodesHeard = dict(filter(lambda node: (self.nodeTable[node]['seenCount'] > 0), self.nodeTable))
+            #                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            # TypeError: cannot convert dictionary update sequence element #0 to a sequence
+
+            # print('\n==============================================================================================\n{} nodes heard since start'.format(len(nodesHeard)))
+            print('\n==============================================================================================\nnodes heard since start')
+
+            # for node in nodesHeard:
+            for node in self.nodeTable:
+                if self.nodeTable[node]['seenCount'] > 0:
+                    nodeString = self.formatNodeString(
+                        str(node),
+                        self.nodeTable[node]['fromId'] if 'fromId' in self.nodeTable[node] else 'N/A',
+                        self.nodeTable[node]['shortName'] if 'shortName' in self.nodeTable[node] else 'N/A',
+                        self.nodeTable[node]['longName'] if 'longName' in self.nodeTable[node] else 'N/A'
+                    )
+
+                    print('{}, seenCount: {}, macaddr: {}, hwModel: {}, role: {}, lastHeard: {}, hopsAway: {}, hopLimit: {}, hopStart: {}, hops: {}'.format(
+                        nodeString,
+                        self.nodeTable[node]['seenCount'] if 'seenCount' in self.nodeTable[node] else 'N/A',
+                        self.nodeTable[node]['macaddr'] if 'macaddr' in self.nodeTable[node] else 'N/A',
+                        self.nodeTable[node]['hwModel'] if 'hwModel' in self.nodeTable[node] else 'N/A',
+                        self.nodeTable[node]['role'] if 'role' in self.nodeTable[node] else 'N/A',
+                        time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self.nodeTable[node]['lastHeard'])) if 'lastHeard' in self.nodeTable[node] else 'N/A',
+                        self.nodeTable[node]['hopsAway'] if 'hopsAway' in self.nodeTable[node] else 'N/A',
+                        self.nodeTable[node]['hopLimit'] if 'hopLimit' in self.nodeTable[node] else 'N/A',
+                        self.nodeTable[node]['hopStart'] if 'hopStart' in self.nodeTable[node] else 'N/A',
+                        self.nodeTable[node]['hops'] if 'hops' in self.nodeTable[node] else 'N/A'
+                        )
+                    )
+        except Exception as e:
+            print('An exception occurred: {}'.format(e))
+            traceback.print_exc()
+        print('==============================================================================================')
+
+    def getBaseNodeInfo(self):
+        print('\n=== Base Node ================================================================================')
+        thisNode = self.interface.getMyNodeInfo()
+        self.gatewayId = self.dictValueOrDefault('id', thisNode['user'])
+
+        print('id: {}, longName: {}, shortName: {}, hwModel: {}, macaddr: {}, batteryLevel: {}, voltage: {}, channelUtilization: {}, airUtilTx: {}, lat: {}, lon: {}, altitude: {}'.format(
+            self.gatewayId,
+            self.dictValueOrDefault('longName', thisNode['user']),
+            self.dictValueOrDefault('shortName', thisNode['user']),
+            self.dictValueOrDefault('hwModel', thisNode['user']),
+            self.dictValueOrDefault('macaddr', thisNode['user']),
+            self.dictValueOrDefault('batteryLevel', thisNode['deviceMetrics']),
+            self.dictValueOrDefault('voltage', thisNode['deviceMetrics']),
+            self.dictValueOrDefault('channelUtilization', thisNode['deviceMetrics']),
+            self.dictValueOrDefault('airUtilTx', thisNode['deviceMetrics']),
+            self.dictValueOrDefault('latitude', thisNode['position']),
+            self.dictValueOrDefault('longitude', thisNode['position']),
+            self.dictValueOrDefault('altitude', thisNode['position']),
+            )
+        )
         print('==============================================================================================')
 
 class Neighbors(Helpers):
@@ -110,12 +186,13 @@ class Neighbors(Helpers):
     def display(self):
         print('\n==============================================================================================\n{} Node(s) Reporting Neighbors:'.format(len(self.neighborTable)))
         try:
+            nodeTable = nodes.get()
             for keyFrom in self.neighborTable:
-                nodeString = formatNodeString(
+                nodeString = self.formatNodeString(
                     str(keyFrom),
-                    nodes.get()[keyFrom]['fromId'],
-                    nodes.get()[keyFrom]['shortName'],
-                    nodes.get()[keyFrom]['longName']
+                    nodeTable[keyFrom]['fromId'],
+                    nodeTable[keyFrom]['shortName'],
+                    nodeTable[keyFrom]['longName']
                 )
 
                 print('--- {} has {} neighbors'.format(
@@ -125,18 +202,18 @@ class Neighbors(Helpers):
                 )
 
                 for key in self.neighborTable[keyFrom]:
-                    nodeString = formatNodeString(
+                    nodeString = self.formatNodeString(
                         str(key),
-                        nodes.get()[key]['fromId'],
-                        nodes.get()[key]['shortName'],
-                        nodes.get()[key]['longName']
+                        nodeTable[key]['fromId'],
+                        nodeTable[key]['shortName'],
+                        nodeTable[key]['longName']
                     )
 
                     print("{}, rxTime: {}, snr: {:2.2f}, hops: {:1s}".format(
                         nodeString,
                         time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self.neighborTable[keyFrom][key]['rxTime'])),
                         self.neighborTable[keyFrom][key]['snr'],
-                        str(nodes.get()[key]['hops'])
+                        str(nodeTable[key]['hops'])
                         )
                     )
         except Exception as e:
@@ -156,23 +233,24 @@ class Messages(Helpers):
     def display(self):
         print('\n==============================================================================================\n{} Messages Received:'.format(len(self.messageTable)))
         try:
+            nodeTable = nodes.get()
             for message in self.messageTable:
-                nodeString = formatNodeString(
+                nodeString = self.formatNodeString(
                     str(message[0]),
                     message[2],
-                    nodes.get()[message[0]]['shortName'] if message[0] in nodes.get() and 'shortName' in nodes.get()[message[0]] else 'N/A',
-                    nodes.get()[message[0]]['longName'] if message[0] in nodes.get() and 'longName' in nodes.get()[message[0]] else 'N/A'
+                    nodeTable[message[0]]['shortName'] if message[0] in nodeTable and 'shortName' in nodeTable[message[0]] else 'N/A',
+                    nodeTable[message[0]]['longName'] if message[0] in nodeTable and 'longName' in nodeTable[message[0]] else 'N/A'
                 )
 
                 print("{}: {}, toId: {}, channel: {}, rxSnr: {}, rxRssi: {}, hopLimit: {}, hops: {}, text: {}".format(
                     time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(message[1])),
                     nodeString,
                     message[3],
-                    message[4],
+                    message[4] if message[3] == '^all' else 'N/A',
                     message[5],
                     message[6],
-                    nodes.get()[message[0]]['hopLimit'] if message[0] in nodes.get() and 'hopLimit' in nodes.get()[message[0]] else 'N/A',
-                    nodes.get()[message[0]]['hops'] if message[0] in nodes.get() and 'hops' in nodes.get()[message[0]] else 'N/A',
+                    nodeTable[message[0]]['hopLimit'] if message[0] in nodeTable and 'hopLimit' in nodeTable[message[0]] else 'N/A',
+                    nodeTable[message[0]]['hops'] if message[0] in nodeTable and 'hops' in nodeTable[message[0]] else 'N/A',
                     message[7]
                     )
                 )
@@ -193,12 +271,13 @@ class Encrypted(Helpers):
     def display(self):
         print('\n==============================================================================================\n{} encrypted items:'.format(len(self.encryptedTable)))
         try:
+            nodeTable = nodes.get()
             for message in self.encryptedTable:
-                nodeString = formatNodeString(
+                nodeString = self.formatNodeString(
                     str(message[2]) if message[2] != None else 'N/A',
                     message[1] if message[1] != None else 'N/A',
-                    nodes.get()[message[2]]['shortName'] if message[0] != None and message[2] in nodes.get() else 'N/A',
-                    nodes.get()[message[2]]['longName'] if message[0] != None and message[2] in nodes.get() else 'N/A'
+                    nodeTable[message[2]]['shortName'] if message[0] != None and message[2] in nodeTable and 'shortName' in nodeTable[message[2]] else 'N/A',
+                    nodeTable[message[2]]['longName'] if message[0] != None and message[2] in nodeTable and 'longName' in nodeTable[message[2]] else 'N/A'
                 )
 
                 print('{:19s}: {}, toId: {:4s}, to: {:10d}, channel: {:3d}, hops: {:1s}'.format(
@@ -207,7 +286,7 @@ class Encrypted(Helpers):
                     message[3],
                     message[4],
                     message[5],
-                    str(nodes.get()[message[2]]['hops'])
+                    str(nodeTable[message[2]]['hops'])
                     )
                 )
         except Exception as e:
@@ -218,8 +297,6 @@ class Encrypted(Helpers):
 class Aprs(Helpers):
     aprsTable = {}
     aprsISConected = False
-    callSign = 'your_callsign'
-    callPass = 'your_callsign_pass_code'
     # log in to APRS-IS server with passcode to allow writing
     # serverHost = 'first.aprs.net'
     # serverPort = 10152
@@ -239,20 +316,21 @@ class Aprs(Helpers):
     def display(self):
         print('\n==============================================================================================\n{} APRS participants:'.format(len(self.aprsTable)))
         try:
+            nodeTable = nodes.get()
             for key in self.aprsTable:
-                nodeString = formatNodeString(
+                nodeString = self.formatNodeString(
                     str(key),
-                    nodes.get()[key]['fromId'],
-                    nodes.get()[key]['shortName'],
-                    nodes.get()[key]['longName']
+                    nodeTable[key]['fromId'],
+                    nodeTable[key]['shortName'],
+                    nodeTable[key]['longName']
                 )
 
                 print("{:19s}: {}, count: {:3d}, hwModel: {:23s}, hops: {:1s}".format(
                     time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self.aprsTable[key]['rxTime'])),
                     nodeString,
                     self.aprsTable[key]['count'],
-                    nodes.get()[key]['hwModel'],
-                    str(nodes.get()[key]['hops'])
+                    nodeTable[key]['hwModel'],
+                    str(nodeTable[key]['hops'])
                     )
                 )
         except Exception as e:
@@ -301,12 +379,12 @@ class Aprs(Helpers):
                 self.sock.connect((self.serverHost, self.serverPort))
 
                 time.sleep(1)
-                login = 'user {} pass {} vers "KD7UBJ Meshtastic APRS/MQTT iGate v{}" \n'.format(self.callSign, self.callPass, version)
+                login = 'user {} pass {} vers "KD7UBJ Meshtastic APRS/MQTT iGate v{}" \n'.format(callSign, callPass, version)
                 self.sock.send(login.encode())
                 time.sleep(1)
                 data = self.sock.recv(1024)
 
-                if ('# logresp {} verified').format(self.callSign).encode() in data:
+                if ('# logresp {} verified').format(callSign).encode() in data:
                     self.sock.settimeout(1)
                     self.aprsISConected = True
                     return True
@@ -333,18 +411,19 @@ class Aprs(Helpers):
         return False
 
     def sendToAprsIs(self, packet, connectRetry = 3):
-        if packet['from'] != None and packet['from'] in nodes.get() and 'latitude' in packet['decoded']['position'] and 'longitude' in packet['decoded']['position'] and 'shortName' in nodes.get()[packet['from']] and 'longName' in nodes.get()[packet['from']] and 'hwModel' in nodes.get()[packet['from']] and packet['fromId'] != None:
+        nodeTable = nodes.get()
+        if packet['from'] != None and packet['from'] in nodeTable and 'latitude' in packet['decoded']['position'] and 'longitude' in packet['decoded']['position'] and 'shortName' in nodeTable[packet['from']] and 'longName' in nodeTable[packet['from']] and 'hwModel' in nodeTable[packet['from']] and packet['fromId'] != None:
             lat_aprs, lon_aprs = aprs.decimalDegreesToAprs(packet['decoded']['position']['latitude'], packet['decoded']['position']['longitude'])
 
             # aprsPacket = 'MESH{}>APRS,qAR,{}:!{}/{}nMeshtastic {} ({}, {})'.format(
             aprsPacket = 'MESH{}>APRS,qAR,{}:!{}\{}oMeshtastic {} ({}, {})'.format(
-                nodes.get()[packet['from']]['shortName'].upper(),
-                self.callSign,
+                nodeTable[packet['from']]['shortName'].upper(),
+                callSign,
                 lat_aprs,
                 lon_aprs,
                 packet['fromId'],
-                nodes.get()[packet['from']]['longName'],
-                nodes.get()[packet['from']]['hwModel']
+                nodeTable[packet['from']]['longName'],
+                nodeTable[packet['from']]['hwModel']
                 )
 
             for i in range(connectRetry):
@@ -378,441 +457,407 @@ class Aprs(Helpers):
             self.sock.shutdown(0)
             self.sock.close()
 
-nodes = Nodes()
-neighbors = Neighbors()
-messages = Messages()
-aprs = Aprs()
-encrypted = Encrypted()
+class MeshAprs(Helpers):
+    interface = None
+    spin = True
+    identTimer = None
 
+    def __init__(self):
+        self.interface = meshtastic.serial_interface.SerialInterface()
+        pub.subscribe(self.onConnectionEstablished, 'meshtastic.connection.established')
+        pub.subscribe(self.onConnectionLost, 'meshtastic.connection.lost')
 
-def onConnectionEstablished(interface, topic=pub.AUTO_TOPIC): # called when we (re)connect to the radio
-  print ('Connected to Meshtastic device')
+    def startReceive(self):
+        pub.subscribe(self.onReceive, 'meshtastic.receive')
 
-def onConnectionLost(interface, topic=pub.AUTO_TOPIC): # called when we (re)connect to the radio
-    global spin
-    print ('Disconnected from Meshtastic device')
-    spin = False
+        # self.broadcastIdent(meshaprs.interface, createTimer = True)
 
-def formatNodeString(_from, fromId, shortName, longName):
-    return '{:9s} - {:4s} - {:36s} - {:10s}'.format(
-        fromId if fromId != None else 'N/A',
-        shortName if shortName != None else 'N/A',
-        longName if longName != None else 'N/A',
-        _from if _from != None else 'N/A'
-    )
+        while (self.spin == True):
+            self.workSleep(.5, meshaprs.interface)
 
-def onReceive(packet, interface): # called when a packet arrives
-    global gatewayId
+        if None != self.identTimer:
+            self.identTimer.cancel()
 
-    try:
-        hopLimit = packet['hopLimit'] if 'hopLimit' in packet else 0
-        hopStart = packet['hopStart'] if 'hopStart' in packet else hopLimit
+    def shutdown(self):
+        self.interface.close()
 
-        nodes.insert(packet['from'], packet['fromId'], packet)
+    def onConnectionEstablished(self, interface, topic=pub.AUTO_TOPIC): # called when we (re)connect to the radio
+        print ('Connected to Meshtastic device')
 
-        nodes.get()[packet['from']]['hopLimit'] = hopLimit
-        nodes.get()[packet['from']]['hopStart'] = hopStart
-        nodes.get()[packet['from']]['hops'] = hopStart - hopLimit
+    def onConnectionLost(self, interface, topic=pub.AUTO_TOPIC): # called when we (re)connect to the radio
+        print ('Disconnected from Meshtastic device')
+        self.spin = False
 
-        # skip encrypted packets as they cannot be decoded (easily)
-        if 'encrypted' in packet:
-            print('\n{}: Skipping encrypted packet fromId: {} - {} - {} to {} on channel {}'.format(
+    def onReceive(self, packet, interface): # called when a packet arrives
+        try:
+            nodeTable = nodes.get()
+            hopLimit = packet['hopLimit'] if 'hopLimit' in packet else 0
+            hopStart = packet['hopStart'] if 'hopStart' in packet else hopLimit
+
+            nodes.insert(packet['from'], packet['fromId'], packet)
+
+            nodeTable[packet['from']]['hopLimit'] = hopLimit
+            nodeTable[packet['from']]['hopStart'] = hopStart
+            nodeTable[packet['from']]['hops'] = hopStart - hopLimit
+            nodeTable[packet['from']]['seenCount'] = nodeTable[packet['from']]['seenCount'] + 1
+
+            # skip encrypted packets as they cannot be decoded (easily)
+            if 'encrypted' in packet:
+                print('\n{}: Skipping encrypted packet fromId: {} - {} - {} to {} on channel {}'.format(
+                    time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])) if 'rxTime' in packet else 'N/A',
+                    packet['fromId'] if packet['fromId'] != None else 'N/A',
+                    nodeTable[packet['from']]['longName'] if packet['from'] != None and packet['from'] in nodeTable and 'longName' in nodeTable[packet['from']] else 'N/A',
+                    nodeTable[packet['from']]['shortName'] if packet['from'] != None and packet['from'] in nodeTable and 'longName' in nodeTable[packet['from']] else 'N/A',
+                    packet['toId'],
+                    packet['channel']
+                    )
+                )
+                encrypted.insert(packet['rxTime'], packet['fromId'], packet['from'], packet['toId'], packet['to'], packet['channel'])
+                return
+
+            nodeString = self.formatNodeString(
+                str(packet['from']),
+                packet['fromId'] if packet['fromId'] != None else 'N/A',
+                nodeTable[packet['from']]['shortName'] if packet['from'] != None and packet['from'] in nodeTable and 'shortName' in nodeTable[packet['from']] else 'N/A',
+                nodeTable[packet['from']]['longName']  if packet['from'] != None and packet['from'] in nodeTable  and 'longName' in nodeTable[packet['from']] else 'N/A'
+            )
+
+            print('\n{}: {:16s}: {} => {} on channel {} with {}'.format(
                 time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])) if 'rxTime' in packet else 'N/A',
-                packet['fromId'] if packet['fromId'] != None else 'N/A',
-                nodes.get()[packet['from']]['longName'] if packet['from'] != None and packet['from'] in nodes.get() and 'longName' in nodes.get()[packet['from']] else 'N/A',
-                nodes.get()[packet['from']]['shortName'] if packet['from'] != None and packet['from'] in nodes.get() and 'longName' in nodes.get()[packet['from']] else 'N/A',
+                packet['decoded']['portnum'],
+                nodeString,
                 packet['toId'],
-                packet['channel']
+                packet['channel'] if 'channel' in packet else 'N/A',
+                nodeTable[packet['from']]['hwModel'] if packet['from'] != None and packet['from'] in nodeTable and 'hwModel' in nodeTable[packet['from']] else 'N/A'
                 )
             )
-            encrypted.insert(packet['rxTime'], packet['fromId'], packet['from'], packet['toId'], packet['to'], packet['channel'])
-            return
 
-        nodeString = formatNodeString(
-            str(packet['from']),
-            packet['fromId'] if packet['fromId'] != None else 'N/A',
-            nodes.get()[packet['from']]['shortName'] if packet['from'] != None and packet['from'] in nodes.get() and 'shortName' in nodes.get()[packet['from']] else 'N/A',
-            nodes.get()[packet['from']]['longName']  if packet['from'] != None and packet['from'] in nodes.get()  and 'longName' in nodes.get()[packet['from']] else 'N/A'
-        )
+            if packet['decoded']['portnum'] == 'TELEMETRY_APP':
+                if 'deviceMetrics' in packet['decoded']['telemetry']:
+                    print('{}: {:16s}: batteryLevel: {}, voltage: {}, channelUtilization: {}, airUtilTx: {}'.format(
+                        time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
+                        packet['decoded']['portnum'],
+                        self.dictValueOrDefault('batteryLevel', packet['decoded']['telemetry']['deviceMetrics']),
+                        self.dictValueOrDefault('voltage', packet['decoded']['telemetry']['deviceMetrics']),
+                        self.dictValueOrDefault('channelUtilization', packet['decoded']['telemetry']['deviceMetrics']),
+                        self.dictValueOrDefault('airUtilTx', packet['decoded']['telemetry']['deviceMetrics'])
+                        )
+                    )
+                elif 'environmentMetrics' in packet['decoded']['telemetry']:
+                    print('{}: {:16s}: temperature: {}, relativeHumidity: {}, barometricPressure: {}, gasResistance: {}, iaq: {}'.format(
+                        time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
+                        packet['decoded']['portnum'],
+                        self.dictValueOrDefault('temperature', packet['decoded']['telemetry']['environmentMetrics']),
+                        self.dictValueOrDefault('relativeHumidity', packet['decoded']['telemetry']['environmentMetrics']),
+                        self.dictValueOrDefault('barometricPressure', packet['decoded']['telemetry']['environmentMetrics']),
+                        self.dictValueOrDefault('gasResistance', packet['decoded']['telemetry']['environmentMetrics']),
+                        self.dictValueOrDefault('iaq', packet['decoded']['telemetry']['environmentMetrics'])
+                        )
+                    )
+                else:
+                    print('{}: {:16s}: unknown payload\n{}'.format(
+                        time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
+                        packet['decoded']['portnum'],
+                        packet
+                        )
+                    )
 
-        print('\n{}: {:16s}: {} => {} on channel {} with {}'.format(
-            time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])) if 'rxTime' in packet else 'N/A',
-            packet['decoded']['portnum'],
-            nodeString,
-            packet['toId'],
-            packet['channel'] if 'channel' in packet else 'N/A',
-            nodes.get()[packet['from']]['hwModel'] if packet['from'] != None and packet['from'] in nodes.get() and 'hwModel' in nodes.get()[packet['from']] else 'N/A'
-            )
-        )
-
-        if packet['decoded']['portnum'] == 'TELEMETRY_APP':
-            if 'deviceMetrics' in packet['decoded']['telemetry']:
-                print('{}: {:16s}: batteryLevel: {}, voltage: {}, channelUtilization: {}, airUtilTx: {}'.format(
+            elif packet['decoded']['portnum'] == 'POSITION_APP':
+                print('{}: {:16s}: latitude: {}, longitude: {}, altitude: {}, time: {}, satsInView: {}, precisionBits: {}, PDOP: {}, groundTrack: {}'.format(
                     time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
                     packet['decoded']['portnum'],
-                    dictValueOrDefault('batteryLevel', packet['decoded']['telemetry']['deviceMetrics']),
-                    dictValueOrDefault('voltage', packet['decoded']['telemetry']['deviceMetrics']),
-                    dictValueOrDefault('channelUtilization', packet['decoded']['telemetry']['deviceMetrics']),
-                    dictValueOrDefault('airUtilTx', packet['decoded']['telemetry']['deviceMetrics'])
+                    self.dictValueOrDefault('latitude', packet['decoded']['position']),
+                    self.dictValueOrDefault('longitude', packet['decoded']['position']),
+                    self.dictValueOrDefault('altitude', packet['decoded']['position']),
+                    self.dictValueOrDefault('time', packet['decoded']['position']),
+                    self.dictValueOrDefault('satsInView', packet['decoded']['position']),
+                    self.dictValueOrDefault('precisionBits', packet['decoded']['position']),
+                    self.dictValueOrDefault('PDOP', packet['decoded']['position']),
+                    self.dictValueOrDefault('groundTrack', packet['decoded']['position'])
                     )
                 )
-            elif 'environmentMetrics' in packet['decoded']['telemetry']:
-                print('{}: {:16s}: temperature: {}, relativeHumidity: {}, barometricPressure: {}, gasResistance: {}, iaq: {}'.format(
+
+                aprs.sendToAprsIs(packet)
+
+            elif packet['decoded']['portnum'] == 'NODEINFO_APP':
+                print('{}: {:16s}: id: {}, longName: {}, shortName: {}, macaddr: {}, hwModel: {}, wantResponse: {}'.format(
                     time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
                     packet['decoded']['portnum'],
-                    dictValueOrDefault('temperature', packet['decoded']['telemetry']['environmentMetrics']),
-                    dictValueOrDefault('relativeHumidity', packet['decoded']['telemetry']['environmentMetrics']),
-                    dictValueOrDefault('barometricPressure', packet['decoded']['telemetry']['environmentMetrics']),
-                    dictValueOrDefault('gasResistance', packet['decoded']['telemetry']['environmentMetrics']),
-                    dictValueOrDefault('iaq', packet['decoded']['telemetry']['environmentMetrics'])
+                    self.dictValueOrDefault('id', packet['decoded']['user']),
+                    self.dictValueOrDefault('longName', packet['decoded']['user']),
+                    self.dictValueOrDefault('shortName', packet['decoded']['user']),
+                    self.dictValueOrDefault('macaddr', packet['decoded']['user']),
+                    self.dictValueOrDefault('hwModel', packet['decoded']['user']),
+                    self.dictValueOrDefault('wantResponse', packet['decoded'])
                     )
                 )
+
+            elif packet['decoded']['portnum'] == 'TEXT_MESSAGE_APP':
+                print('{}: {:16s}: {}'.format(
+                    time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
+                    packet['decoded']['portnum'],
+                    packet['decoded']['text']
+                    )
+                )
+
+                # someday... convert to APRS format and write APRS message packet to APRS-IS?
+
+                # if packet is dm to this node send appropriate response
+                channel = 0
+                if nodes.gatewayId == packet['toId'] or '^all' == packet['toId']:
+                    direct = False if '^all' == packet['toId'] else True
+                    destId = '^all' if '^all' == packet['toId'] else packet['fromId']
+
+                    if direct == False and 'channel' in packet:
+                        channel = packet['channel']
+
+                    response = self.handleRfCommand(packet['decoded']['text'], direct)
+                    if response != None:
+                        interface.sendText(response, destinationId = destId, wantAck = False, channelIndex = channel)
+
+                messages.insert(
+                    packet['from'],
+                    packet['rxTime'],
+                    packet['fromId'] if packet['fromId'] != None else 'N/A',
+                    packet['toId'],
+                    channel,
+                    packet['rxSnr'],
+                    packet['rxRssi'],
+                    packet['decoded']['text']
+                )
+
+            elif packet['decoded']['portnum'] == 'TRACEROUTE_APP':
+                print('{}: {:16s}: rxSnr: {}, hopLimit: {}, wantAck: {}, rxRssi: {}, hopStart: {}'.format(
+                    time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
+                    packet['decoded']['portnum'],
+                    packet['rxSnr'],
+                    packet['hopLimit'],
+                    packet['wantAck'],
+                    packet['rxRssi'],
+                    packet['hopStart']
+                    )
+                )
+
+            elif packet['decoded']['portnum'] == 'ROUTING_APP':
+                print('{}: {:16s}: rxSnr: {}, hopLimit: {}, rxRssi: {}'.format(
+                    time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
+                    packet['decoded']['portnum'],
+                    self.dictValueOrDefault('rxSnr', packet),
+                    self.dictValueOrDefault('hopLimit', packet),
+                    self.dictValueOrDefault('rxRssi', packet)
+                    )
+                )
+
+            elif packet['decoded']['portnum'] == 'NEIGHBORINFO_APP':
+                print('{}: {:16s}: rxSnr: {}, hopLimit: {}'.format(
+                    time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
+                    packet['decoded']['portnum'],
+                    packet['rxSnr'] if 'rxSnr' in packet else 'N/A',
+                    packet['hopLimit']
+                    )
+                )
+
+                neighbors.insert(packet)
+
+            elif packet['decoded']['portnum'] == 'RANGE_TEST_APP':
+                print('{}: {:16s}: payload: {}, rxSnr: {}, rxRssi: {}'.format(
+                    time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
+                    packet['decoded']['portnum'],
+                    packet['decoded']['payload'].decode('ascii'),
+                    self.dictValueOrDefault('rxSnr', packet),
+                    self.dictValueOrDefault('rxRssi', packet)
+                    )
+                )
+
+            elif packet['decoded']['portnum'] == 'ADMIN_APP':
+                print('{}: {:16s}: payload: {}, admin: {}'.format(
+                    time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
+                    packet['decoded']['portnum'],
+                    packet['decoded']['payload'].decode('ascii'),
+                    packet['decoded']['admin']
+                    )
+                )
+
             else:
-                print('{}: {:16s}: unknown payload\n{}'.format(
+                print('{}: UNKNOWN {}:'.format(
                     time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
-                    packet['decoded']['portnum'],
-                    packet
+                    packet['decoded']['portnum']
                     )
                 )
+                print('packet: {}'.format(packet))
 
-        elif packet['decoded']['portnum'] == 'POSITION_APP':
-            print('{}: {:16s}: latitude: {}, longitude: {}, altitude: {}, time: {}, satsInView: {}, precisionBits: {}, PDOP: {}, groundTrack: {}'.format(
+            print('{}: {:16s}: id: {}, rxTime: {}, rxSnr: {}, rxRssi: {}, priority: {}, hopLimit: {}, hopStart: {}, hops: {}'.format(
                 time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
-                packet['decoded']['portnum'],
-                dictValueOrDefault('latitude', packet['decoded']['position']),
-                dictValueOrDefault('longitude', packet['decoded']['position']),
-                dictValueOrDefault('altitude', packet['decoded']['position']),
-                dictValueOrDefault('time', packet['decoded']['position']),
-                dictValueOrDefault('satsInView', packet['decoded']['position']),
-                dictValueOrDefault('precisionBits', packet['decoded']['position']),
-                dictValueOrDefault('PDOP', packet['decoded']['position']),
-                dictValueOrDefault('groundTrack', packet['decoded']['position'])
+                self.dictValueOrDefault('portnum', packet['decoded']),
+                self.dictValueOrDefault('id', packet),
+                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
+                self.dictValueOrDefault('rxSnr', packet),
+                self.dictValueOrDefault('rxRssi', packet),
+                self.dictValueOrDefault('priority', packet),
+                hopLimit,
+                self.dictValueOrDefault('hopStart', packet),
+                hopStart - hopLimit
                 )
             )
+        except Exception as e:
+            print('An exception occurred: {}'.format(e))
+            traceback.print_exc()
+            print('Packet: {}'.format(packet))
 
-            aprs.sendToAprsIs(packet)
+    def pollKeyboard(self):
+        while sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
+            line = sys.stdin.readline()
+            if line:
+                return line
 
-        elif packet['decoded']['portnum'] == 'NODEINFO_APP':
-            print('{}: {:16s}: id: {}, longName: {}, shortName: {}, macaddr: {}, hwModel: {}, wantResponse: {}'.format(
-                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
-                packet['decoded']['portnum'],
-                dictValueOrDefault('id', packet['decoded']['user']),
-                dictValueOrDefault('longName', packet['decoded']['user']),
-                dictValueOrDefault('shortName', packet['decoded']['user']),
-                dictValueOrDefault('macaddr', packet['decoded']['user']),
-                dictValueOrDefault('hwModel', packet['decoded']['user']),
-                dictValueOrDefault('wantResponse', packet['decoded'])
-                )
-            )
+        return None
 
-        elif packet['decoded']['portnum'] == 'TEXT_MESSAGE_APP':
-            print('{}: {:16s}: {}'.format(
-                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
-                packet['decoded']['portnum'],
-                packet['decoded']['text']
-                )
-            )
+    def workSleep(self, seconds, interface):
+        for i in range (0, int(seconds * 10)):
+            self.handleKeyboardCommand(self.pollKeyboard(), interface)
+            aprs.recv(1024)
+            time.sleep(0.1)
 
-            # someday... convert to APRS format and write APRS message packet to APRS-IS?
-
-            # if packet is dm to this node send appropriate response
-            channel = 0
-            if gatewayId == packet['toId'] or '^all' == packet['toId']:
-                direct = False if '^all' == packet['toId'] else True
-                destId = '^all' if '^all' == packet['toId'] else packet['fromId']
-
-                if direct == False and 'channel' in packet:
-                    channel = packet['channel']
-
-                response = handleRfCommand(packet['decoded']['text'], direct)
-                if response != None:
-                    interface.sendText(response, destinationId = destId, wantAck = False, channelIndex = channel)
-
-            messages.insert(
-                packet['from'],
-                packet['rxTime'],
-                packet['fromId'] if packet['fromId'] != None else 'N/A',
-                packet['toId'],
-                channel,
-                packet['rxSnr'],
-                packet['rxRssi'],
-                packet['decoded']['text']
-            )
-
-        elif packet['decoded']['portnum'] == 'TRACEROUTE_APP':
-            print('{}: {:16s}: rxSnr: {}, hopLimit: {}, wantAck: {}, rxRssi: {}, hopStart: {}'.format(
-                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
-                packet['decoded']['portnum'],
-                packet['rxSnr'],
-                packet['hopLimit'],
-                packet['wantAck'],
-                packet['rxRssi'],
-                packet['hopStart']
-                )
-            )
-
-        elif packet['decoded']['portnum'] == 'ROUTING_APP':
-            print('{}: {:16s}: rxSnr: {}, hopLimit: {}, rxRssi: {}'.format(
-                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
-                packet['decoded']['portnum'],
-                dictValueOrDefault('rxSnr', packet),
-                dictValueOrDefault('hopLimit', packet),
-                dictValueOrDefault('rxRssi', packet)
-                )
-            )
-
-        elif packet['decoded']['portnum'] == 'NEIGHBORINFO_APP':
-            print('{}: {:16s}: rxSnr: {}, hopLimit: {}'.format(
-                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
-                packet['decoded']['portnum'],
-                packet['rxSnr'] if 'rxSnr' in packet else 'N/A',
-                packet['hopLimit']
-                )
-            )
-
-            neighbors.insert(packet)
-
-        elif packet['decoded']['portnum'] == 'RANGE_TEST_APP':
-            print('{}: {:16s}: payload: {}, rxSnr: {}, rxRssi: {}'.format(
-                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
-                packet['decoded']['portnum'],
-                packet['decoded']['payload'].decode('ascii'),
-                dictValueOrDefault('rxSnr', packet),
-                dictValueOrDefault('rxRssi', packet)
-                )
-            )
-
-        elif packet['decoded']['portnum'] == 'ADMIN_APP':
-            print('{}: {:16s}: payload: {}, admin: {}'.format(
-                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
-                packet['decoded']['portnum'],
-                packet['decoded']['payload'].decode('ascii'),
-                packet['decoded']['admin']
-                )
-            )
-
+    def handleKeyboardCommand(self, command, interface):
+        if command == None:
+            return
+        elif command.lower().startswith('a'):
+            aprs.display()
+        elif command.lower().startswith('c'):
+            self.printKbdCommands()
+        elif command.lower().startswith('e'):
+            encrypted.display()
+        elif command.lower().startswith('i'):
+            print('\n==============================================================================================\nbroadcast ident:')
+            self.broadcastIdent(interface, createTimer = False)
+            print('==============================================================================================')
+        elif command.lower().startswith('m'):
+            messages.display()
+        elif command.lower().startswith('nt'):
+            nodes.display()
+        elif command.lower().startswith('n'):
+            neighbors.display()
+        elif command.lower().startswith('q'):
+            print('Quitting...')
+            self.spin = False
+        elif command.lower().startswith('r'):
+            nodes.displayRecent()
+        elif command.lower().startswith('sb'):
+            self.sendBroadcastMessage(command, interface)
+        elif command.lower().startswith('sd'):
+            self.sendDirectMessage(command, interface)
         else:
-            print('{}: UNKNOWN {}:'.format(
-                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
-                packet['decoded']['portnum']
-                )
-            )
-            print('packet: {}'.format(packet))
+            print('Unknown keyboard command')
 
-        print('{}: {:16s}: id: {}, rxTime: {}, rxSnr: {}, rxRssi: {}, priority: {}, hopLimit: {}, hopStart: {}, hops: {}'.format(
-            time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
-            dictValueOrDefault('portnum', packet['decoded']),
-            dictValueOrDefault('id', packet),
-            time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
-            dictValueOrDefault('rxSnr', packet),
-            dictValueOrDefault('rxRssi', packet),
-            dictValueOrDefault('priority', packet),
-            hopLimit,
-            dictValueOrDefault('hopStart', packet),
-            hopStart - hopLimit
-            )
-        )
-
-    except Exception as e:
-        print('An exception occurred: {}'.format(e))
-        traceback.print_exc()
-        print('Packet: {}'.format(packet))
-
-def handleRfCommand(message, direct):
-    global version
-    global gatewayId
-
-    if 'about' == message.lower():
-        print('Received "about": {}'.format(message))
-        return 'KD7UBJ Meshtastic APRS/MQTT iGate ({}) v{}. Send "commands" to list services.'.format(gatewayId, version)
-    elif 'commands' == message.lower():
-        print('Received "commands": {}'.format(message))
-        return '"about" this iGate. "commands" to list possible commands. "git" link to this server\'s python source code. "ping" to receive pong'
-    elif 'git' == message.lower():
-        print('Received "git": {}'.format(message))
-        return 'https://github.com/GregEigsti/meshaprs'
-    elif 'ping' == message.lower():
-        print('Received "ping": {}'.format(message))
-        return 'pong'
-    else:
-        print('Received unknown command: {}'.format(message))
-        if direct:
-            return 'Unknown command: {}. Send "commands" to list services.'.format(message)
-
-    return None
-
-def getMyNodeInfo():
-    global interface
-    global gatewayId
-
-    print('\n=== Base Node ================================================================================')
-    thisNode = interface.getMyNodeInfo()
-    gatewayId = dictValueOrDefault('id', thisNode['user'])
-
-    print('id: {}, longName: {}, shortName: {}, hwModel: {}, macaddr: {}, batteryLevel: {}, voltage: {}, channelUtilization: {}, airUtilTx: {}, lat: {}, lon: {}, altitude: {}'.format(
-        gatewayId,
-        dictValueOrDefault('longName', thisNode['user']),
-        dictValueOrDefault('shortName', thisNode['user']),
-        dictValueOrDefault('hwModel', thisNode['user']),
-        dictValueOrDefault('macaddr', thisNode['user']),
-        dictValueOrDefault('batteryLevel', thisNode['deviceMetrics']),
-        dictValueOrDefault('voltage', thisNode['deviceMetrics']),
-        dictValueOrDefault('channelUtilization', thisNode['deviceMetrics']),
-        dictValueOrDefault('airUtilTx', thisNode['deviceMetrics']),
-        dictValueOrDefault('latitude', thisNode['position']),
-        dictValueOrDefault('longitude', thisNode['position']),
-        dictValueOrDefault('altitude', thisNode['position']),
-        )
-    )
-    print('==============================================================================================')
-
-def broadcastIdent(createTimer = True):
-    global interface
-    global version
-    global gatewayId
-    global identTimer
-
-    ident = 'KD7UBJ Meshtastic APRS/MQTT iGate ({}) v{}. Send "commands" to list services. https://discord.gg/5KUHrjbZ'.format(gatewayId, version)
-    print('\n{} Broadcasting Ident: {}'.format(datetime.datetime.now(), ident))
-    interface.sendText(ident, destinationId = '^all', wantAck = False)
-
-    if createTimer:
-        identTimer = threading.Timer(60 * 60 * 12, broadcastIdent)
-        identTimer.start()
-
-# sb 0 this is a test broadcast message to channel 0
-# sb 1 this is a test broadcast message to channel 1
-def sendBroadcastMessage(command):
-    global interface
-
-    print('\n==============================================================================================\nsend broadcast message:')
-    try:
-        print(command)
-        parts = command.split()
-        print('count   : {}'.format(len(parts))) # 4
-        print('ch-index: {}'.format(parts[1]))
-        print('message : {}'.format(" ".join(parts[2:])))
-
-        retVal = interface.sendText(" ".join(parts[2:]), destinationId = '^all', channelIndex = int(parts[1]), wantAck = True)
-        print(retVal)
-    except Exception as e:
-        print('An exception occurred: {}'.format(e))
-        traceback.print_exc()
-    print('==============================================================================================')
-
-# sd !10a37e85 this is a direct message to !10a37e85
-def sendDirectMessage(command):
-    global interface
-
-    print('\n==============================================================================================\nsend direct message:')
-    try:
-        print(command)
-        parts = command.split()
-        print('count  : {}'.format(len(parts))) # 4
-        print('to     : {}'.format(parts[1]))
-        print('message: {}'.format(" ".join(parts[2:])))
-
-        retVal = interface.sendText(" ".join(parts[2:]), destinationId = parts[1], wantAck = True)
-        print(retVal)
-    except Exception as e:
-        print('An exception occurred: {}'.format(e))
-        traceback.print_exc()
-    print('==============================================================================================')
-
-def dictValueOrDefault(key, parent, default = 'N/A'):
-    return parent[key] if key in parent else default
-
-def pollKeyboard():
-    while sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
-        line = sys.stdin.readline()
-        if line:
-            return line
-
-    return None
-
-def workSleep(seconds):
-    for i in range (0, int(seconds * 10)):
-        handleKeyboardCommand(pollKeyboard())
-        aprs.recv(1024)
-        time.sleep(0.1)
-
-def handleKeyboardCommand(command):
-    global interface
-    global spin
-
-    if command == None:
-        return
-    elif command.lower().startswith('a'):
-        aprs.display()
-    elif command.lower().startswith('c'):
-        printKbdCommands()
-    elif command.lower().startswith('e'):
-        encrypted.display()
-    elif command.lower().startswith('i'):
-        print('\n==============================================================================================\nbroadcast ident:')
-        broadcastIdent(createTimer = False)
+    def printKbdCommands(self):
+        print('\n==============================================================================================\nkeyboard commands:')
+        print('a  => show APRS participants sent to the APRS-IS')
+        print('c  => show available commands')
+        print('e  => show nodes using encryption')
+        print('i  => broadcast ident')
+        print('m  => show received messages')
+        print('n  => show neighbors')
+        print('nt => show nodes table')
+        print('q  => quit')
+        print('r  => heard since starting')
+        # sb 0 this is a test broadcast message to channel 0
+        print('sb <ch-index> <message> => send broadcast message')
+        # sd !10a37e85 this is a direct message to !10a37e85
+        print('sd <to> <message> => send direct message')
         print('==============================================================================================')
-    elif command.lower().startswith('m'):
-        messages.display()
-    elif command.lower().startswith('nt'):
-        nodes.display()
-    elif command.lower().startswith('n'):
-        neighbors.display()
-    elif command.lower().startswith('q'):
-        print('Quitting...')
-        spin = False
-    elif command.lower().startswith('sb'):
-        sendBroadcastMessage(command)
-    elif command.lower().startswith('sd'):
-        sendDirectMessage(command)
-    else:
-        print('Unknown keyboard command')
 
-def printKbdCommands():
-    print('\n==============================================================================================\nkeyboard commands:')
-    print('a  => show APRS participants sent to the APRS-IS')
-    print('c  => show available commands')
-    print('e  => show nodes using encryption')
-    print('i  => broadcast ident')
-    print('m  => show received messages')
-    print('n  => show neighbors')
-    print('nt => show nodes table')
-    print('q  => quit')
+    def broadcastIdent(self, interface, createTimer = True):
+        ident = 'KD7UBJ Meshtastic APRS/MQTT iGate ({}) v{}. Send "commands" to list services. https://discord.gg/5KUHrjbZ'.format(nodes.gatewayId, version)
+        print('\n{} Broadcasting Ident: {}'.format(datetime.datetime.now(), ident))
+        interface.sendText(ident, destinationId = '^all', wantAck = False)
+
+        if createTimer:
+            self.identTimer = threading.Timer(60 * 60 * 24, self.broadcastIdent, [interface])
+            self.identTimer.start()
+
+    def handleRfCommand(self, message, direct):
+        # TODO: add ident - about seems to do that...
+        if 'about' == message.lower():
+            print('Received "about": {}'.format(message))
+            return 'KD7UBJ Meshtastic APRS/MQTT iGate ({}) v{}. Send "commands" to list services.'.format(nodes.gatewayId, version)
+        elif 'commands' == message.lower():
+            print('Received "commands": {}'.format(message))
+            return '"about" this iGate.\n"commands" to list possible commands.\n"git" link to this server\'s python source code.\n"ping" to receive pong'
+        elif 'git' == message.lower():
+            print('Received "git": {}'.format(message))
+            return 'https://github.com/GregEigsti/meshaprs'
+        elif 'ping' == message.lower():
+            print('Received "ping": {}'.format(message))
+            return 'pong'
+        else:
+            print('Received unknown command: {}'.format(message))
+            if direct:
+                return 'Unknown command: {}. Send "commands" to list services.'.format(message)
+
+        return None
+
     # sb 0 this is a test broadcast message to channel 0
-    print('sb <ch-index> <message> => send broadcast message')
+    # sb 1 this is a test broadcast message to channel 1
+    def sendBroadcastMessage(self, command, interface):
+        print('\n==============================================================================================\nsend broadcast message:')
+        try:
+            print(command)
+            parts = command.split()
+            print('count   : {}'.format(len(parts))) # 4
+            print('ch-index: {}'.format(parts[1]))
+            print('message : {}'.format(" ".join(parts[2:])))
+
+            retVal = interface.sendText(" ".join(parts[2:]), destinationId = '^all', channelIndex = int(parts[1]), wantAck = True)
+            print(retVal)
+        except Exception as e:
+            print('An exception occurred: {}'.format(e))
+            traceback.print_exc()
+        print('==============================================================================================')
+
     # sd !10a37e85 this is a direct message to !10a37e85
-    print('sd <to> <message> => send direct message')
-    print('==============================================================================================')
+    def sendDirectMessage(self, command, interface):
+        print('\n==============================================================================================\nsend direct message:')
+        try:
+            print(command)
+            parts = command.split()
+            print('count  : {}'.format(len(parts))) # 4
+            print('to     : {}'.format(parts[1]))
+            print('message: {}'.format(" ".join(parts[2:])))
+
+            retVal = interface.sendText(" ".join(parts[2:]), destinationId = parts[1], wantAck = True)
+            print(retVal)
+        except Exception as e:
+            print('An exception occurred: {}'.format(e))
+            traceback.print_exc()
+        print('==============================================================================================')
 
 def main():
-    global interface
-    global spin
-    global identTimer
-
-    aprs.connectAndLoginToAprsIs()
+    global meshaprs
+    global nodes
+    global neighbors
+    global messages
+    global aprs
+    global encrypted
 
     print('Finding Meshtastic device')
-    interface = meshtastic.serial_interface.SerialInterface()
+    meshaprs = MeshAprs()
+    nodes = Nodes(meshaprs.interface)
+    neighbors = Neighbors()
+    messages = Messages()
+    aprs = Aprs()
+    encrypted = Encrypted()
 
-    pub.subscribe(onConnectionEstablished, 'meshtastic.connection.established')
-    pub.subscribe(onConnectionLost, 'meshtastic.connection.lost')
+    print('Logging in to APRS-IS')
+    aprs.connectAndLoginToAprsIs()
 
-    time.sleep(2)
-    getMyNodeInfo()
+    nodes.getBaseNodeInfo()
     nodes.display()
-    printKbdCommands()
+    meshaprs.printKbdCommands()
 
-    pub.subscribe(onReceive, 'meshtastic.receive')
+    # loop on receive until quit by the user
+    meshaprs.startReceive()
 
-    # broadcastIdent(createTimer = True)
-
-    while (spin == True):
-        workSleep(.5)
-
-    if None != identTimer:
-        identTimer.cancel()
-
-    interface.close()
+    meshaprs.shutdown()
     aprs.shutdown()
 
     print('Exiting...')
