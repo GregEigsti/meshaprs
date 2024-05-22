@@ -7,6 +7,7 @@ To start the iGate: **python3 igate.py**
 **keyboard commands**\
 keyboard commands:\
 a  => show APRS participants sent to the APRS-IS\
+b  => show bogotrons\
 c  => show available commands\
 e  => show nodes using encryption\
 i  => broadcast ident\
