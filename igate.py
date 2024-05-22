@@ -13,7 +13,7 @@ import select
 
 callSign = 'your_callsign'
 callPass = 'your_callsign_pass_code'
-version = '0.0.11'
+version = '0.0.12'
 
 meshaprs = None
 nodes = None
@@ -21,14 +21,39 @@ neighbors = None
 messages = None
 aprs = None
 encrypted = None
+bogotron = None
 
 class Helpers:
+    def formatHeaderString(self, packet, nodeString, nodeTable):
+        return '{}: {:16s}: {} => {} on channel {} with {}'.format(
+            time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])) if 'rxTime' in packet else 'N/A',
+            packet['decoded']['portnum'] if 'decoded' in packet else 'N/A',
+            nodeString,
+            packet['toId'],
+            packet['channel'] if 'channel' in packet else 'N/A',
+            nodeTable[packet['from']]['hwModel'] if packet['from'] != None and packet['from'] in nodeTable and 'hwModel' in nodeTable[packet['from']] else 'N/A'
+            )
+
     def formatNodeString(self, _from, fromId, shortName, longName):
         return '{:9s} - {:4s} - {:36s} - {:10s}'.format(
             fromId if fromId != None else 'N/A',
             shortName if shortName != None else 'N/A',
             longName if longName != None else 'N/A',
             _from if _from != None else 'N/A'
+        )
+
+    def formatFooterString(self, packet, hopStart, hopLimit):
+        return '{}: {:16s}: id: {}, rxTime: {}, rxSnr: {}, rxRssi: {}, priority: {}, hopLimit: {}, hopStart: {}, hops: {}'.format(
+            time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
+            packet['decoded']['portnum'] if 'decoded' in packet else 'N/A',
+            self.dictValueOrDefault('id', packet),
+            time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
+            self.dictValueOrDefault('rxSnr', packet),
+            self.dictValueOrDefault('rxRssi', packet),
+            self.dictValueOrDefault('priority', packet),
+            hopLimit,
+            self.dictValueOrDefault('hopStart', packet),
+            hopStart - hopLimit
         )
 
     def dictValueOrDefault(self, key, parent, default = 'N/A'):
@@ -69,6 +94,7 @@ class Nodes(Helpers):
             print('\n==============================================================================================\n{} nodes heard:'.format(len(nodesHeard)))
             for node in nodesHeard:
                 self.insert(node['num'], node['user']['id'], node['user'])
+                self.nodeTable[node['num']]['lastHeard'] = node['lastHeard'] if 'lastHeard' in node else 'N/A'
 
                 if 'hopsAway' in node:
                     self.nodeTable[node['num']]['hopsAway'] = node['hopsAway']
@@ -82,7 +108,7 @@ class Nodes(Helpers):
                     node['user']['longName']
                 )
 
-                print('{}, macaddr: {}, hwModel: {}, role: {}, lat: {}, lon: {}, alt: {}, time: {}, lastHeard: {}, hopsAway: {}, hopLimit: {}, hopStart: {}, hops: {}'.format(
+                print('{}, macaddr: {:8s}, hwModel: {:20s}, role: {:13s}, lat: {}, lon: {}, alt: {}, time: {:16s}, lastHeard: {:19s}, hopsAway: {:3s}, hopLimit: {:3s}, hopStart: {:3s}, hops: {:3s}'.format(
                     nodeString,
                     node['user']['macaddr'],
                     node['user']['hwModel'],
@@ -91,11 +117,11 @@ class Nodes(Helpers):
                     node['position']['longitude'] if 'position' in node and 'longitude' in node['position'] else 'N/A',
                     node['position']['altitude'] if 'position' in node and 'altitude' in node['position'] else 'N/A',
                     time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(node['position']['time'])) if 'position' in node and 'time' in node['position'] else 'N/A',
-                    time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(node['lastHeard'])) if 'lastHeard' in node else 'N/A',
-                    self.nodeTable[node['num']]['hopsAway'],
-                    self.nodeTable[node['num']]['hopLimit'],
-                    self.nodeTable[node['num']]['hopStart'],
-                    self.nodeTable[node['num']]['hops']
+                    time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(node['lastHeard'])) if 'lastHeard' in node and node['lastHeard'] != 'N/A' else 'N/A',
+                    str(self.nodeTable[node['num']]['hopsAway']),
+                    str(self.nodeTable[node['num']]['hopLimit']),
+                    str(self.nodeTable[node['num']]['hopStart']),
+                    str(self.nodeTable[node['num']]['hops'])
                     )
                 )
         except Exception as e:
@@ -117,6 +143,13 @@ class Nodes(Helpers):
             # print('\n==============================================================================================\n{} nodes heard since start'.format(len(nodesHeard)))
             print('\n==============================================================================================\nnodes heard since start')
 
+            # nodesHeard = self.interface.nodes.values()
+            # for node in nodesHeard:
+            #     # self.insert(node['num'], node['user']['id'], node['user'])
+            #     # TODO: more here?
+            #     if self.nodeTable[node['num']]:
+            #         self.nodeTable[node['num']]['lastHeard'] = node['lastHeard'] if 'lastHeard' in node else 'N/A'
+
             # for node in nodesHeard:
             for node in self.nodeTable:
                 if self.nodeTable[node]['seenCount'] > 0:
@@ -127,17 +160,19 @@ class Nodes(Helpers):
                         self.nodeTable[node]['longName'] if 'longName' in self.nodeTable[node] else 'N/A'
                     )
 
-                    print('{}, seenCount: {}, macaddr: {}, hwModel: {}, role: {}, lastHeard: {}, hopsAway: {}, hopLimit: {}, hopStart: {}, hops: {}'.format(
+                    # TODO: lastHeard is probably stale...
+
+                    print('{}, seenCount: {:4d}, macaddr: {:8s}, hwModel: {:20s}, role: {:13s}, lastHeard: {:19s}, hopsAway: {:3s}, hopLimit: {:3s}, hopStart: {:3s}, hops: {:3s}'.format(
                         nodeString,
                         self.nodeTable[node]['seenCount'] if 'seenCount' in self.nodeTable[node] else 'N/A',
                         self.nodeTable[node]['macaddr'] if 'macaddr' in self.nodeTable[node] else 'N/A',
                         self.nodeTable[node]['hwModel'] if 'hwModel' in self.nodeTable[node] else 'N/A',
                         self.nodeTable[node]['role'] if 'role' in self.nodeTable[node] else 'N/A',
-                        time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self.nodeTable[node]['lastHeard'])) if 'lastHeard' in self.nodeTable[node] else 'N/A',
-                        self.nodeTable[node]['hopsAway'] if 'hopsAway' in self.nodeTable[node] else 'N/A',
-                        self.nodeTable[node]['hopLimit'] if 'hopLimit' in self.nodeTable[node] else 'N/A',
-                        self.nodeTable[node]['hopStart'] if 'hopStart' in self.nodeTable[node] else 'N/A',
-                        self.nodeTable[node]['hops'] if 'hops' in self.nodeTable[node] else 'N/A'
+                        time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self.nodeTable[node]['lastHeard'])) if 'lastHeard' in self.nodeTable[node] and self.nodeTable[node]['lastHeard'] != 'N/A' else 'N/A',
+                        str(self.nodeTable[node]['hopsAway']) if 'hopsAway' in self.nodeTable[node] else 'N/A',
+                        str(self.nodeTable[node]['hopLimit']) if 'hopLimit' in self.nodeTable[node] else 'N/A',
+                        str(self.nodeTable[node]['hopStart']) if 'hopStart' in self.nodeTable[node] else 'N/A',
+                        str(self.nodeTable[node]['hops']) if 'hops' in self.nodeTable[node] else 'N/A'
                         )
                     )
         except Exception as e:
@@ -204,9 +239,9 @@ class Neighbors(Helpers):
                 for key in self.neighborTable[keyFrom]:
                     nodeString = self.formatNodeString(
                         str(key),
-                        nodeTable[key]['fromId'],
-                        nodeTable[key]['shortName'],
-                        nodeTable[key]['longName']
+                        nodeTable[key]['fromId'] if key in nodeTable and 'fromId' in nodeTable[key] else 'N/A',
+                        nodeTable[key]['shortName'] if key in nodeTable and 'shortName' in nodeTable[key] else 'N/A',
+                        nodeTable[key]['longName'] if key in nodeTable and 'longName' in nodeTable[key] else 'N/A'
                     )
 
                     print("{}, rxTime: {}, snr: {:2.2f}, hops: {:1s}".format(
@@ -216,6 +251,37 @@ class Neighbors(Helpers):
                         str(nodeTable[key]['hops'])
                         )
                     )
+        except Exception as e:
+            print('An exception occurred: {}'.format(e))
+            traceback.print_exc()
+        print('==============================================================================================')
+
+class Bogotron(Helpers):
+    bogotronTable = {}
+
+    def insert(self, packet):
+        self.bogotronTable[packet['from']] = { 'rxTime': packet['rxTime'] }
+
+    def get(self):
+        return self.bogotronTable
+
+    def display(self):
+        print('\n==============================================================================================\n{} Bogotrons Seen:'.format(len(self.bogotronTable)))
+        try:
+            for key in self.bogotronTable:
+
+                # nodeString = self.formatNodeString(
+                #     str(key),
+                #     nodeTable[key]['fromId'],
+                #     nodeTable[key]['shortName'],
+                #     nodeTable[key]['longName']
+                # )
+
+                print('{:19s}: {}'.format(
+                    time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self.bogotronTable[key]['rxTime'])),
+                    key
+                    )
+                )
         except Exception as e:
             print('An exception occurred: {}'.format(e))
             traceback.print_exc()
@@ -496,24 +562,13 @@ class MeshAprs(Helpers):
 
             nodes.insert(packet['from'], packet['fromId'], packet)
 
+            if 'fromId' not in packet or packet['fromId'] == None or 'shortName' not in packet or packet['shortName'] == None or 'longName' not in packet or packet['longName'] == None:
+                bogotron.insert(packet)
+
             nodeTable[packet['from']]['hopLimit'] = hopLimit
             nodeTable[packet['from']]['hopStart'] = hopStart
             nodeTable[packet['from']]['hops'] = hopStart - hopLimit
             nodeTable[packet['from']]['seenCount'] = nodeTable[packet['from']]['seenCount'] + 1
-
-            # skip encrypted packets as they cannot be decoded (easily)
-            if 'encrypted' in packet:
-                print('\n{}: Skipping encrypted packet fromId: {} - {} - {} to {} on channel {}'.format(
-                    time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])) if 'rxTime' in packet else 'N/A',
-                    packet['fromId'] if packet['fromId'] != None else 'N/A',
-                    nodeTable[packet['from']]['longName'] if packet['from'] != None and packet['from'] in nodeTable and 'longName' in nodeTable[packet['from']] else 'N/A',
-                    nodeTable[packet['from']]['shortName'] if packet['from'] != None and packet['from'] in nodeTable and 'longName' in nodeTable[packet['from']] else 'N/A',
-                    packet['toId'],
-                    packet['channel']
-                    )
-                )
-                encrypted.insert(packet['rxTime'], packet['fromId'], packet['from'], packet['toId'], packet['to'], packet['channel'])
-                return
 
             nodeString = self.formatNodeString(
                 str(packet['from']),
@@ -522,17 +577,15 @@ class MeshAprs(Helpers):
                 nodeTable[packet['from']]['longName']  if packet['from'] != None and packet['from'] in nodeTable  and 'longName' in nodeTable[packet['from']] else 'N/A'
             )
 
-            print('\n{}: {:16s}: {} => {} on channel {} with {}'.format(
-                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])) if 'rxTime' in packet else 'N/A',
-                packet['decoded']['portnum'],
-                nodeString,
-                packet['toId'],
-                packet['channel'] if 'channel' in packet else 'N/A',
-                nodeTable[packet['from']]['hwModel'] if packet['from'] != None and packet['from'] in nodeTable and 'hwModel' in nodeTable[packet['from']] else 'N/A'
-                )
-            )
+            headerString = self.formatHeaderString(packet, nodeString, nodeTable)
+            print('\n{}'.format(headerString))
 
-            if packet['decoded']['portnum'] == 'TELEMETRY_APP':
+            # skip encrypted packets as they cannot be decoded (easily)
+            if 'encrypted' in packet:
+                print('Encrypted packet.')
+                encrypted.insert(packet['rxTime'], packet['fromId'], packet['from'], packet['toId'], packet['to'], packet['channel'])
+
+            elif packet['decoded']['portnum'] == 'TELEMETRY_APP':
                 if 'deviceMetrics' in packet['decoded']['telemetry']:
                     print('{}: {:16s}: batteryLevel: {}, voltage: {}, channelUtilization: {}, airUtilTx: {}'.format(
                         time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
@@ -686,19 +739,8 @@ class MeshAprs(Helpers):
                 )
                 print('packet: {}'.format(packet))
 
-            print('{}: {:16s}: id: {}, rxTime: {}, rxSnr: {}, rxRssi: {}, priority: {}, hopLimit: {}, hopStart: {}, hops: {}'.format(
-                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
-                self.dictValueOrDefault('portnum', packet['decoded']),
-                self.dictValueOrDefault('id', packet),
-                time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(packet['rxTime'])),
-                self.dictValueOrDefault('rxSnr', packet),
-                self.dictValueOrDefault('rxRssi', packet),
-                self.dictValueOrDefault('priority', packet),
-                hopLimit,
-                self.dictValueOrDefault('hopStart', packet),
-                hopStart - hopLimit
-                )
-            )
+            footerString = self.formatFooterString(packet, hopStart, hopLimit)
+            print(footerString)
         except Exception as e:
             print('An exception occurred: {}'.format(e))
             traceback.print_exc()
@@ -723,6 +765,8 @@ class MeshAprs(Helpers):
             return
         elif command.lower().startswith('a'):
             aprs.display()
+        elif command.lower().startswith('b'):
+            bogotron.display()
         elif command.lower().startswith('c'):
             self.printKbdCommands()
         elif command.lower().startswith('e'):
@@ -752,6 +796,7 @@ class MeshAprs(Helpers):
     def printKbdCommands(self):
         print('\n==============================================================================================\nkeyboard commands:')
         print('a  => show APRS participants sent to the APRS-IS')
+        print('b  => show bogotrons')
         print('c  => show available commands')
         print('e  => show nodes using encryption')
         print('i  => broadcast ident')
@@ -837,6 +882,7 @@ def main():
     global neighbors
     global messages
     global aprs
+    global bogotron
     global encrypted
 
     print('Finding Meshtastic device')
@@ -846,6 +892,7 @@ def main():
     messages = Messages()
     aprs = Aprs()
     encrypted = Encrypted()
+    bogotron = Bogotron()
 
     print('Logging in to APRS-IS')
     aprs.connectAndLoginToAprsIs()
