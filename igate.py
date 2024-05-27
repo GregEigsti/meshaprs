@@ -1,5 +1,9 @@
 #! /usr/bin/python3
 
+# pip install openmeteo-requests --break-system-packages
+# pip install retry_requests --break-system-packages
+# pip install requests_cache --break-system-packages
+
 from pubsub import pub
 import meshtastic
 import meshtastic.serial_interface
@@ -10,10 +14,14 @@ import sys
 from socket import *
 import traceback 
 import select
+import sqlite3
+import openmeteo_requests
+import requests_cache
+from retry_requests import retry
 
 callSign = 'your_callsign'
 callPass = 'your_callsign_pass_code'
-version = '0.0.12'
+version = '0.0.13'
 
 meshaprs = None
 nodes = None
@@ -143,13 +151,6 @@ class Nodes(Helpers):
             # print('\n==============================================================================================\n{} nodes heard since start'.format(len(nodesHeard)))
             print('\n==============================================================================================\nnodes heard since start')
 
-            # nodesHeard = self.interface.nodes.values()
-            # for node in nodesHeard:
-            #     # self.insert(node['num'], node['user']['id'], node['user'])
-            #     # TODO: more here?
-            #     if self.nodeTable[node['num']]:
-            #         self.nodeTable[node['num']]['lastHeard'] = node['lastHeard'] if 'lastHeard' in node else 'N/A'
-
             # for node in nodesHeard:
             for node in self.nodeTable:
                 if self.nodeTable[node]['seenCount'] > 0:
@@ -219,7 +220,7 @@ class Neighbors(Helpers):
         return self.neighborTable
 
     def display(self):
-        print('\n==============================================================================================\n{} Node(s) Reporting Neighbors:'.format(len(self.neighborTable)))
+        print('\n==============================================================================================\n{} node(s) reporting neighbors:'.format(len(self.neighborTable)))
         try:
             nodeTable = nodes.get()
             for keyFrom in self.neighborTable:
@@ -266,7 +267,7 @@ class Bogotron(Helpers):
         return self.bogotronTable
 
     def display(self):
-        print('\n==============================================================================================\n{} Bogotrons Seen:'.format(len(self.bogotronTable)))
+        print('\n==============================================================================================\n{} bogotrons seen:'.format(len(self.bogotronTable)))
         try:
             for key in self.bogotronTable:
 
@@ -297,7 +298,7 @@ class Messages(Helpers):
         return self.messageTable
 
     def display(self):
-        print('\n==============================================================================================\n{} Messages Received:'.format(len(self.messageTable)))
+        print('\n==============================================================================================\n{} messages received:'.format(len(self.messageTable)))
         try:
             nodeTable = nodes.get()
             for message in self.messageTable:
@@ -666,7 +667,10 @@ class MeshAprs(Helpers):
 
                     response = self.handleRfCommand(packet['decoded']['text'], direct)
                     if response != None:
-                        interface.sendText(response, destinationId = destId, wantAck = False, channelIndex = channel)
+                        for item in response:
+                            interface.sendText(item, destinationId = destId, wantAck = False, channelIndex = channel)
+                            if len(response) > 1:
+                                time.sleep(1)
 
                 messages.insert(
                     packet['from'],
@@ -821,23 +825,24 @@ class MeshAprs(Helpers):
             self.identTimer.start()
 
     def handleRfCommand(self, message, direct):
-        # TODO: add ident - about seems to do that...
-        if 'about' == message.lower():
-            print('Received "about": {}'.format(message))
-            return 'KD7UBJ Meshtastic APRS/MQTT iGate ({}) v{}. Send "commands" to list services.'.format(nodes.gatewayId, version)
-        elif 'commands' == message.lower():
-            print('Received "commands": {}'.format(message))
-            return '"about" this iGate.\n"commands" to list possible commands.\n"git" link to this server\'s python source code.\n"ping" to receive pong'
-        elif 'git' == message.lower():
-            print('Received "git": {}'.format(message))
-            return 'https://github.com/GregEigsti/meshaprs'
-        elif 'ping' == message.lower():
-            print('Received "ping": {}'.format(message))
-            return 'pong'
+        if '?about' == message.lower():
+            print('Received "?about": {}'.format(message))
+            return ['KD7UBJ Meshtastic APRS/MQTT iGate ({}) v{}. Send "commands" to list services. https://discord.gg/5KUHrjbZ'.format(nodes.gatewayId, version)]
+        elif '?commands' == message.lower():
+            print('Received "?commands": {}'.format(message))
+            return ['"?about" this iGate.\n"?commands" to list possible commands.\n"?git" link to this server\'s python source code.\n"?ping" to receive pong\n"?wx" to receive local weather']
+        elif '?git' == message.lower():
+            print('Received "?git": {}'.format(message))
+            return ['https://github.com/GregEigsti/meshaprs']
+        elif '?ping' == message.lower():
+            print('Received "?ping": {}'.format(message))
+            return ['pong']
+        elif '?wx' == message.lower():
+            print('Received "?wx": {}'.format(message))
+            return self.fetchLocalWeather()
         else:
-            print('Received unknown command: {}'.format(message))
             if direct:
-                return 'Unknown command: {}. Send "commands" to list services.'.format(message)
+                return ['Unknown command: {}. Send "?commands" to list services.'.format(message)]
 
         return None
 
@@ -876,6 +881,108 @@ class MeshAprs(Helpers):
             traceback.print_exc()
         print('==============================================================================================')
 
+    def fetchLocalWeather(self):
+        # Setup the Open-Meteo API client with cache and retry on error
+        cache_session = requests_cache.CachedSession('.cache', expire_after = 3600)
+        retry_session = retry(cache_session, retries = 5, backoff_factor = 0.2)
+        openmeteo = openmeteo_requests.Client(session = retry_session)
+
+        # Make sure all required weather variables are listed here
+        # The order of variables in hourly or daily is important to assign them correctly below
+        url = "https://api.open-meteo.com/v1/forecast"
+        params = {
+            "latitude": 47.61535,
+            "longitude": -122.03351,
+            "current": ["temperature_2m", "relative_humidity_2m", "apparent_temperature", "precipitation", "rain", "showers", "snowfall", "weather_code", "cloud_cover", "pressure_msl", "surface_pressure", "wind_speed_10m", "wind_direction_10m", "wind_gusts_10m"],
+            "temperature_unit": "fahrenheit",
+            "wind_speed_unit": "mph",
+            "precipitation_unit": "inch",
+            "timezone": "America/Los_Angeles",
+            "forecast_days": 1
+        }
+
+        current = openmeteo.weather_api(url, params=params)[0].Current()
+
+        wx1 = 'Forecast: {}\nTemp: {:.2f} F\nApparent Temp: {:.2f} F\nRel Hum: {:.2f}\nPrecip: {:.2f}\nRain: {:.2f}\nShowers: {:.2f}\nSnow: {:.2f}'.format(
+            time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(current.Time())),
+            current.Variables(0).Value(),
+            current.Variables(2).Value(),
+            current.Variables(1).Value(),
+            current.Variables(3).Value(),
+            current.Variables(4).Value(),
+            current.Variables(5).Value(),
+            current.Variables(6).Value()
+            )
+
+        wx2 = 'Summary: {}\nCloud cover: {:.2f}\nPressure MSL: {:.2f}\nSurface Pressure: {:.2f}\nWind speed (10m): {:.2f}\nWind dir (10m): {:.2f}\nWind gusts (10m): {:.2f}'.format(
+            self.wxCodeToString(current.Variables(7).Value()),
+            current.Variables(8).Value(),
+            current.Variables(9).Value(),
+            current.Variables(10).Value(),
+            current.Variables(11).Value(),
+            current.Variables(12).Value(),
+            current.Variables(13).Value()
+            )
+
+        return [wx1, wx2]
+
+    def wxCodeToString(self, code):
+        if code == 0:
+            return "Clear sky"
+        elif code in [1, 2, 3]:
+            return "Mainly clear, partly cloudy, and overcast"
+        elif code in [45, 48]:
+            return "Fog and depositing rime fog"
+        elif code in [51, 53, 55]:
+            return "Drizzle: Light, moderate, and dense intensity"
+        elif code in [56, 57]:
+            return "Freezing Drizzle: Light and dense intensity"
+        elif code in [61, 63, 65]:
+            return "Rain: Slight, moderate and heavy intensity"
+        elif code in [66, 67]:
+            return "Freezing Rain: Light and heavy intensity"
+        elif code in [71, 73, 75]:
+            return "Snow fall: Slight, moderate, and heavy intensity"
+        elif code == 77:
+            return "Snow grains"
+        elif code in [80, 81, 82]:
+            return "Rain showers: Slight, moderate, and violent"
+        elif code in [85, 86]:
+            return "Snow showers slight and heavy"
+        elif code == 95:
+            return "Thunderstorm: Slight or moderate"
+        elif code in [96, 99]:
+            return "Thunderstorm with slight and heavy hail"
+        else:
+            return "Unknown"
+
+
+def sqlite3Test():
+    try:
+        # Connect to DB and create a cursor
+        sqliteConnection = sqlite3.connect('sql.db')
+        cursor = sqliteConnection.cursor()
+        print('DB Init')
+
+        # Write a query and execute it with cursor
+        query = 'select sqlite_version();'
+        cursor.execute(query)
+
+        # Fetch and output result
+        result = cursor.fetchall()
+        print('SQLite Version is {}'.format(result))
+
+        # Close the cursor
+        cursor.close()
+
+    except sqlite3.Error as error:
+        print('Error occurred - ', error)
+
+    finally:
+        if sqliteConnection:
+            sqliteConnection.close()
+            print('SQLite Connection closed')
+
 def main():
     global meshaprs
     global nodes
@@ -884,6 +991,9 @@ def main():
     global aprs
     global bogotron
     global encrypted
+
+    print('Goofin with sqlite3...')
+    sqlite3Test()
 
     print('Finding Meshtastic device')
     meshaprs = MeshAprs()
