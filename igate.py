@@ -21,7 +21,10 @@ from retry_requests import retry
 
 callSign = 'your_callsign'
 callPass = 'your_callsign_pass_code'
-version = '0.0.13'
+version = '0.0.14'
+
+iGateWxLat = wx_location_lat
+iGateWxLon = wx_location_lon
 
 meshaprs = None
 nodes = None
@@ -249,7 +252,7 @@ class Neighbors(Helpers):
                         nodeString,
                         time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self.neighborTable[keyFrom][key]['rxTime'])),
                         self.neighborTable[keyFrom][key]['snr'],
-                        str(nodeTable[key]['hops'])
+                        str(nodeTable[key]['hops']) if key in nodeTable and 'hops' in nodeTable[key] else 'N/A'
                         )
                     )
         except Exception as e:
@@ -830,16 +833,19 @@ class MeshAprs(Helpers):
             return ['KD7UBJ Meshtastic APRS/MQTT iGate ({}) v{}. Send "commands" to list services. https://discord.gg/5KUHrjbZ'.format(nodes.gatewayId, version)]
         elif '?commands' == message.lower():
             print('Received "?commands": {}'.format(message))
-            return ['"?about" this iGate.\n"?commands" to list possible commands.\n"?git" link to this server\'s python source code.\n"?ping" to receive pong\n"?wx" to receive local weather']
+            return ['"?about" this iGate.\n"?commands" to list commands.\n"?git" link to python source code.\n"?ping" to receive pong\n"?wx-current" current local weather\n"?wx-forecast" forecasted local weather']
         elif '?git' == message.lower():
             print('Received "?git": {}'.format(message))
             return ['https://github.com/GregEigsti/meshaprs']
         elif '?ping' == message.lower():
             print('Received "?ping": {}'.format(message))
             return ['pong']
-        elif '?wx' == message.lower():
-            print('Received "?wx": {}'.format(message))
-            return self.fetchLocalWeather()
+        elif '?wx-current' == message.lower():
+            print('Received "?wx-current": {}'.format(message))
+            return self.fetchLocalCurrentWeather()
+        elif '?wx-forecast' == message.lower():
+            print('Received "?wx-forecast": {}'.format(message))
+            return self.fetchLocalForecastedWeather()
         else:
             if direct:
                 return ['Unknown command: {}. Send "?commands" to list services.'.format(message)]
@@ -881,7 +887,7 @@ class MeshAprs(Helpers):
             traceback.print_exc()
         print('==============================================================================================')
 
-    def fetchLocalWeather(self):
+    def fetchLocalCurrentWeather(self):
         # Setup the Open-Meteo API client with cache and retry on error
         cache_session = requests_cache.CachedSession('.cache', expire_after = 3600)
         retry_session = retry(cache_session, retries = 5, backoff_factor = 0.2)
@@ -891,8 +897,8 @@ class MeshAprs(Helpers):
         # The order of variables in hourly or daily is important to assign them correctly below
         url = "https://api.open-meteo.com/v1/forecast"
         params = {
-            "latitude": 47.61535,
-            "longitude": -122.03351,
+            "latitude": iGateWxLat,
+            "longitude": iGateWxLon,
             "current": ["temperature_2m", "relative_humidity_2m", "apparent_temperature", "precipitation", "rain", "showers", "snowfall", "weather_code", "cloud_cover", "pressure_msl", "surface_pressure", "wind_speed_10m", "wind_direction_10m", "wind_gusts_10m"],
             "temperature_unit": "fahrenheit",
             "wind_speed_unit": "mph",
@@ -903,7 +909,7 @@ class MeshAprs(Helpers):
 
         current = openmeteo.weather_api(url, params=params)[0].Current()
 
-        wx1 = 'Forecast: {}\nTemp: {:.2f} F\nApparent Temp: {:.2f} F\nRel Hum: {:.2f}\nPrecip: {:.2f}\nRain: {:.2f}\nShowers: {:.2f}\nSnow: {:.2f}'.format(
+        wx1 = 'Current WX: {}\nTemp: {:.2f} F\nApparent Temp: {:.2f} F\nRel Hum: {:.2f}\nPrecip: {:.2f}\nRain: {:.2f}\nShowers: {:.2f}\nSnow: {:.2f}'.format(
             time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(current.Time())),
             current.Variables(0).Value(),
             current.Variables(2).Value(),
@@ -925,6 +931,64 @@ class MeshAprs(Helpers):
             )
 
         return [wx1, wx2]
+
+    def fetchLocalForecastedWeather(self):
+        forecasts = []
+
+        # Setup the Open-Meteo API client with cache and retry on error
+        cache_session = requests_cache.CachedSession('.cache', expire_after = 3600)
+        retry_session = retry(cache_session, retries = 5, backoff_factor = 0.2)
+        openmeteo = openmeteo_requests.Client(session = retry_session)
+
+        # Make sure all required weather variables are listed here
+        # The order of variables in hourly or daily is important to assign them correctly below
+        url = "https://api.open-meteo.com/v1/forecast"
+        params = {
+            "latitude": iGateWxLat,
+            "longitude": iGateWxLon,
+            "daily": ["weather_code", "temperature_2m_max", "temperature_2m_min", "uv_index_max", "precipitation_sum", "rain_sum", "showers_sum", "snowfall_sum", "precipitation_probability_max", "wind_speed_10m_max", "wind_gusts_10m_max", "wind_direction_10m_dominant"],
+            "temperature_unit": "fahrenheit",
+            "wind_speed_unit": "mph",
+            "precipitation_unit": "inch",
+            "timezone": "America/Los_Angeles",
+            "forecast_days": 3
+        }
+
+        daily = openmeteo.weather_api(url, params=params)[0].Daily()
+        daily_weather_code = daily.Variables(0).ValuesAsNumpy()
+        daily_temperature_2m_max = daily.Variables(1).ValuesAsNumpy()
+        daily_temperature_2m_min = daily.Variables(2).ValuesAsNumpy()
+        daily_uv_index_max = daily.Variables(3).ValuesAsNumpy()
+        daily_precipitation_sum = daily.Variables(4).ValuesAsNumpy()
+        daily_rain_sum = daily.Variables(5).ValuesAsNumpy()
+        daily_showers_sum = daily.Variables(6).ValuesAsNumpy()
+        daily_snowfall_sum = daily.Variables(7).ValuesAsNumpy()
+        daily_precipitation_probability_max = daily.Variables(8).ValuesAsNumpy()
+        daily_wind_speed_10m_max = daily.Variables(9).ValuesAsNumpy()
+        daily_wind_gusts_10m_max = daily.Variables(10).ValuesAsNumpy()
+        daily_wind_direction_10m_dominant = daily.Variables(11).ValuesAsNumpy()
+
+        for i in range(len(daily_weather_code)):
+            wx = '{}\n{}\nMax: {:.2f}F\nMin: {:.2f}F\nUV: {:.2f}\nPrecip: {:.2f}\nRain: {:.2f}\nShowers: {:.2f}\nSnow: {:.2f}\nPrecip: {:.2f}%\nWind Speed: {:.2f}\nWind Gusts: {:.2f}\nWind Dir: {:.2f}'.format(
+                time.strftime('%Y-%m-%d', time.localtime(daily.Time() + i * daily.Interval())),
+                self.wxCodeToString(daily_weather_code[i]),
+                daily_temperature_2m_max[i],
+                daily_temperature_2m_min[i],
+                daily_uv_index_max[i],
+                daily_precipitation_sum[i],
+                daily_rain_sum[i],
+                daily_showers_sum[i],
+                daily_snowfall_sum[i],
+                daily_precipitation_probability_max[i],
+                daily_wind_speed_10m_max[i],
+                daily_wind_gusts_10m_max[i],
+                daily_wind_direction_10m_dominant[i]
+                )
+
+            forecasts.append(wx)
+
+        return forecasts
+
 
     def wxCodeToString(self, code):
         if code == 0:
