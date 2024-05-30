@@ -24,7 +24,9 @@ sb 0 this is a test broadcast message to channel 0\
 sd !10a37e85 this is a direct message to !10a37e85
 
 **Over the air RF commands (received on Meshtastic RF network)**\
-"about" this iGate.\
-"commands" to list possible commands.\
-"git" link to this server's python source code.\
-"ping" to receive pong
+"?about" this iGate.\
+"?commands" to list possible commands.\
+"?git" link to this server's python source code.\
+"ping" to receive pong.\
+"?wx-current" to receive current local weather.\
+"?wx-forecast" to receive forecasted local weather.
